@@ -1,0 +1,22 @@
+
+File format:
++-------------------+=====================+
+| header (48 bytes) | data (dynamic size) |
++-------------------+=====================+
+
+Data format:
++================+-------------------------------------+-------------------+...
+| indexes (256k) | next index block position (8 bytes) | data (up to 64MB) |
++================+-------------------------------------+-------------------+...
+^----------------------------- dynamic repeat -----------------------------^
+
+
+Indexes format (fixed size):
++----------------------------------+------------------------------+...
+| original seek position (8 bytes) | real seek position (8 bytes) |
++----------------------------------+------------------------------+...
+^----------------------- repeat 16384 times ----------------------^
+
++ Each block of indexes (256k) is sorted.
++ Right after the index block there is a seek position to next index block.
++ Data contains plain data blocks, each is 4k bytes. No metadata here.

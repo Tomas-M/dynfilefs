@@ -36,7 +36,7 @@ static pthread_mutex_t dynfilefs_mutex;
 #define NUM_INDEXED_BLOCKS 16384
 
 FILE * fp;
-static const char empty[DATA_BLOCK_SIZE];
+static char empty[DATA_BLOCK_SIZE];
 
 #include <dyfslib.c>
 

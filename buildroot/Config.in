@@ -1,0 +1,12 @@
+config BR2_PACKAGE_DYNFILEFS
+	bool "dynfilefs"
+	depends on BR2_USE_WCHAR
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on BR2_USE_MMU
+	depends on BR2_PACKAGE_LIBFUSE
+	help
+	  dynfilefs filesystem support using fuse
+
+comment "dynfilefs needs a toolchain w/ wchar, threads"
+	depends on BR2_USE_MMU
+	depends on !BR2_USE_WCHAR || !BR2_TOOLCHAIN_HAS_THREADS

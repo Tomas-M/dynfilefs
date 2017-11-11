@@ -227,11 +227,6 @@ static void usage(char * cmd)
 
 int main(int argc, char *argv[])
 {
-    // The following line ensures that the process is not killed by systemd
-    // on shutdown, it is necessary to keep process running if root filesystem
-    // is mounted using dynfilefs. Proper end of the process is umount, not kill.
-    argv[0][0] = '@';
-
     int ret;
 
     if (argc < 4)
@@ -249,6 +244,11 @@ int main(int argc, char *argv[])
        usage(argv[0]);
        return 13;
     }
+
+    // The following line ensures that the process is not killed by systemd
+    // on shutdown, it is necessary to keep process running if root filesystem
+    // is mounted using dynfilefs. Proper end of the process is umount, not kill.
+    argv[0][0] = '@';
 
     // we're fooling fuse here that we got only one parameter - mountdir
     argv[1] = argv[3];

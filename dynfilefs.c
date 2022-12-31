@@ -25,7 +25,7 @@
 
 static const char *dynfilefs_path = "/loop.fs";
 static const char *save_path = "changes.dat";
-static const char *header = "DynfilefsFS 2.20 (c) 2012 Tomas M <www.slax.org>";
+static const char *header = "DynfilefsFS 2.21 (c) 2023 Tomas M <www.slax.org>";
 off_t virtual_size = 0;
 off_t first_index = 0;
 off_t zero = 0;
@@ -145,6 +145,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size,
 		     off_t offset, struct fuse_file_info *fi)
 {
     if(strcmp(path, dynfilefs_path) != 0) return -ENOENT;
+    if (offset + size > virtual_size) return with_unlock(-ENOSPC); // do not allow to write beyond file size
 
     off_t tot = 0;
     off_t data_offset;
@@ -153,7 +154,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size,
     (void) fi;
 
     pthread_mutex_lock(&dynfilefs_mutex);
-
+	
     while (tot < size)
     {
        data_offset = get_data_offset(offset);

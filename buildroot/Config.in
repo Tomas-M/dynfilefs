@@ -1,9 +1,8 @@
-config BR2_PACKAGE_DYNFILEFS
-	bool "dynfilefs"
-	depends on BR2_USE_WCHAR
-	depends on BR2_TOOLCHAIN_HAS_THREADS
-	depends on BR2_USE_MMU
-	depends on BR2_PACKAGE_LIBFUSE
+config BR2_PACKAGE_UNIONFS
+	bool "dynfilefs (FUSE)"
+	depends on BR2_TOOLCHAIN_HAS_THREADS # libfuse
+	depends on BR2_USE_MMU # libfuse
+	select BR2_PACKAGE_LIBFUSE
 	help
 	  dynfilefs filesystem support using fuse
 

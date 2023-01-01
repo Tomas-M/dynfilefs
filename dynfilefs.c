@@ -23,22 +23,20 @@
 #include <pthread.h>
 #include <wait.h>
 
-static const char *dynfilefs_path = "/loop.fs";
+static const char *dynfilefs_path = "/virtual.dat";
 static const char *save_path = "changes.dat";
-static const char *header = "DynfilefsFS 2.21 (c) 2023 Tomas M <www.slax.org>";
+static const char *header = "DynfilefsFS 3.00 (c) 2023 Tomas M <www.slax.org>";
 off_t virtual_size = 0;
-off_t first_index = 0;
+off_t header_size = 0;
+off_t last_block_offset = 0;
 off_t zero = 0;
 
 static pthread_mutex_t dynfilefs_mutex;
 
 #define DATA_BLOCK_SIZE 4096
-#define NUM_INDEXED_BLOCKS 16384
 
 FILE * fp;
 static char empty[DATA_BLOCK_SIZE];
-
-#include <dyfslib.c>
 
 static int with_unlock(int err)
 {
@@ -46,14 +44,19 @@ static int with_unlock(int err)
    return err;
 }
 
-static int dynfilefs_fsync(const char *path, int isdatasync,
-		     struct fuse_file_info *fi)
+static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
-	(void) path;
-	(void) isdatasync;
-	(void) fi;
-	fflush(fp);
-	return 0;
+   (void) path;
+   (void) isdatasync;
+   (void) fi;
+   return 0;
+}
+
+static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
+{
+   (void) path;
+   (void) fi;
+   return 0;
 }
 
 
@@ -75,8 +78,7 @@ static int dynfilefs_getattr(const char *path, struct stat *stbuf)
 	return res;
 }
 
-static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-			 off_t offset, struct fuse_file_info *fi)
+static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
 	(void) offset;
 	(void) fi;
@@ -91,6 +93,7 @@ static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler
 	return 0;
 }
 
+
 static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 {
 	if (strcmp(path, dynfilefs_path) != 0)
@@ -100,8 +103,41 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset,
-		      struct fuse_file_info *fi)
+
+
+// discover real position of data for offset
+//
+static off_t get_data_offset(off_t offset)
+{
+   int ret;
+   off_t target = 0;
+
+   offset = header_size + sizeof(virtual_size) + offset / DATA_BLOCK_SIZE * sizeof(offset);
+   fseeko(fp, offset, SEEK_SET);
+   ret = fread(&target, sizeof(target), 1, fp);
+   if (ret < 0) return 0;
+
+   return target;
+}
+
+
+static off_t create_data_offset(off_t offset)
+{
+   int ret;
+   last_block_offset += DATA_BLOCK_SIZE;
+
+   offset = header_size + sizeof(virtual_size) + offset / DATA_BLOCK_SIZE * sizeof(offset);
+
+   fseeko(fp, offset, SEEK_SET);
+   ret = fwrite(&last_block_offset, sizeof(last_block_offset), 1, fp);
+   if (ret < 0) return 0;
+
+   return last_block_offset;
+}
+
+
+
+static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     if (strcmp(path, dynfilefs_path) != 0) return -ENOENT;
 
@@ -141,8 +177,7 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
 }
 
 
-static int dynfilefs_write(const char *path, const char *buf, size_t size,
-		     off_t offset, struct fuse_file_info *fi)
+static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     if(strcmp(path, dynfilefs_path) != 0) return -ENOENT;
     if (offset + size > virtual_size) return with_unlock(-ENOSPC); // do not allow to write beyond file size
@@ -154,7 +189,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size,
     (void) fi;
 
     pthread_mutex_lock(&dynfilefs_mutex);
-	
+
     while (tot < size)
     {
        data_offset = get_data_offset(offset);
@@ -184,14 +219,6 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size,
 }
 
 
-static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
-{
-	(void) path;
-	(void) fi;
-	fflush(fp);
-	return 0;
-}
-
 static struct fuse_operations dynfilefs_oper = {
 	.getattr	= dynfilefs_getattr,
 	.readdir	= dynfilefs_readdir,
@@ -206,24 +233,25 @@ static void usage(char * cmd)
 {
        printf("usage: %s [storage_file] [sizeMB] [mountpoint]\n", cmd);
        printf("\n");
-       printf("Mount filesystem to [mountpoint], provide a virtual file ./loop.fs\n");
-       printf("of size [sizeMB] so you can make a filesystem on it and mount it.\n");
-       printf("Store all changes made to loop.fs to [storage_file]\n");
+       printf("Mount filesystem to [mountpoint], provide a virtual file [mountpoint]/virtual.dat of size [sizeMB]\n");
+       printf("All changes made to virtual.dat file are stored to [storage_file]\n");
        printf("\n");
        printf("  [storage_file] - path to a file where all changes will be stored.\n");
-       printf("  [sizeMB]       - loop.fs will be sizeMB * 1024 * 1024 - 1 bytes long\n");
+       printf("  [sizeMB]       - virtual.dat will be sizeMB * 1024 * 1024 bytes long\n");
+       printf("                 - this parameter is ignored if [storage_file] already exists\n");
+       printf("                   since in that case, the size is read from the storage_file\n");
        printf("\n");
        printf("Example usage:\n");
        printf("\n");
        printf("  # %s /tmp/changes.dat 1024 /mnt\n", cmd);
-       printf("  # mke2fs -F /mnt/loop.fs\n");
-       printf("  # mount -o loop,sync /mnt/loop.fs /mnt\n");
+       printf("  # mke2fs -F /mnt/virtual.dat\n");
+       printf("  # mount -o loop,sync /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("Be aware that the [storage_file] has about 0.4%% overhead, thus if you\n");
-       printf("put [sizeMB] data to loop.fs then the [storage_file] will be little bigger\n");
-       printf("than the [sizeMB] specified. This is important if you store changes on VFAT,\n");
-       printf("since VFAT has 4GB file size limit, thus you can't store full 4096 MB of data\n");
-       printf("due to the overhead. Each 64MB of data needs 256k+8 bytes index.\n");
+       printf("Be aware that the [storage_file] has about 2 MB overhead for each 1GB of data,\n");
+       printf("thus the size of [storage_file] will be little bigger than [sizeMB] specified.\n");
+       printf("This is important if you plan to save [storage_file] on VFAT,\n");
+       printf("since VFAT has 4GB file size limit, so you need to use sizeMB <= 4087\n");
+       printf("on VFAT due to the overhead.\n");
 }
 
 int main(int argc, char *argv[])
@@ -233,18 +261,20 @@ int main(int argc, char *argv[])
     if (argc < 4)
     {
        usage(argv[0]);
+       return 11;
+    }
+
+    off_t sizeMB = atoi(argv[2]);
+    if (sizeMB <= 0)
+    {
+       usage(argv[0]);
        return 12;
     }
 
     save_path = argv[1];
-    off_t sizeMB = atoi(argv[2]);
-    virtual_size = sizeMB * 1024 * 1024 - 1;
 
-    if (sizeMB <= 0)
-    {
-       usage(argv[0]);
-       return 13;
-    }
+    header_size = strlen(header);
+    virtual_size = sizeMB * 1024 * 1024;
 
     // The following line ensures that the process is not killed by systemd
     // on shutdown, it is necessary to keep process running if root filesystem
@@ -253,42 +283,74 @@ int main(int argc, char *argv[])
 
     // we're fooling fuse here that we got only one parameter - mountdir
     argv[1] = argv[3];
-//    argv[2] = "-d";  // uncomment for debug
+    //argv[2] = "-d";  // uncomment for debug
     argc=2;
-//    argc=3; // uncomment for debug
+    //argc=3; // uncomment for debug
 
-    // open save data file
+    // open existing changes file
     fp = fopen(save_path, "r+");
-    if (fp == NULL)
+    if (fp != NULL)
     {
-       // create empty dataset
+       //check first 14 bytes of header if file content is in compatible DynFileFS format
+       fseeko(fp, 0, SEEK_SET);
+       char saved_header[4096] = "";
+       ret = fread(saved_header, 14, 1, fp);
+       if (ret < 0)
+       {
+          printf("cannot read header of from file %s\n", save_path);
+          return 13;
+       }
+       if (strncmp(saved_header, header, 14) !=0 )
+       {
+          printf("The existing file %s is not in proper format. Accepted format is only: %.14s\n", save_path, header);
+          return 14;
+       }
+
+       fseeko(fp, header_size, SEEK_SET);
+       ret = fread(&virtual_size, sizeof(virtual_size), 1, fp);
+       if (ret < 0)
+       {
+          printf("cannot read size of virtual file from the file %s\n", save_path);
+          return 15;
+       }
+
+       // calculate new last_block_offset
+       off_t metadata_size = header_size + sizeof(virtual_size) + virtual_size / DATA_BLOCK_SIZE * sizeof(off_t);
+       fseeko(fp, 0, SEEK_END);
+       off_t written_data_size = ftello(fp) - metadata_size;
+       if (written_data_size < 0) written_data_size = 0;
+       off_t written_blocks = written_data_size / DATA_BLOCK_SIZE;
+       last_block_offset = metadata_size + written_blocks * DATA_BLOCK_SIZE;
+    }
+    else // file does not exist yet or cannot be opened, attempt to create it
+    {
        fp = fopen(save_path, "w+");
        if (fp == NULL)
        {
           printf("cannot open %s for writing\n", save_path);
-          return 14;
+          return 16;
        }
 
+       // write header
        ret = fwrite(header,strlen(header),1,fp);
        if (ret < 0)
        {
-          printf("cannot write to %s\n", save_path);
-          return 15;
+          printf("cannot write header to %s\n", save_path);
+          return 16;
        }
-       fseeko(fp, strlen(header) + NUM_INDEXED_BLOCKS*sizeof(zero)*2, SEEK_SET);
-       ret = fwrite(&zero,sizeof(zero),1,fp);
-    }
 
-    if (fp == NULL)
-    {
-       printf("cannot open %s for writing\n", save_path);
-       return 16;
+       // write size
+       ret = fwrite(&virtual_size,sizeof(virtual_size),1,fp);
+       if (ret < 0)
+       {
+          printf("cannot write to %s\n", save_path);
+          return 17;
+       }
+
+       last_block_offset = header_size + sizeof(virtual_size) + virtual_size / DATA_BLOCK_SIZE * sizeof(off_t);
     }
 
     fseeko(fp, 0, SEEK_SET);
-
-    // first index is always right after the header. Get the position
-    first_index = strlen(header);
 
     // empty block is needed for comparison. Blocks full of null bytes are not stored
     memset(&empty, 0, sizeof(empty));

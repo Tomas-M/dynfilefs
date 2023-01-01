@@ -207,7 +207,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
           if (data_offset == 0) return with_unlock(-ENOSPC); // write error, not enough free space
           fseeko(fp, data_offset + (offset % DATA_BLOCK_SIZE), SEEK_SET);
           len = fwrite(buf, 1, wr, fp);
-          if (len < 0) return with_unlock(-errno);
+          if (len <= 0) return with_unlock(-errno);
        }
        tot += len;
        buf += len;

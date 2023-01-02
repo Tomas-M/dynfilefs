@@ -49,6 +49,7 @@ static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_in
    (void) path;
    (void) isdatasync;
    (void) fi;
+   fflush(fp);
    return 0;
 }
 
@@ -56,6 +57,7 @@ static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
 {
    (void) path;
    (void) fi;
+   fflush(fp);
    return 0;
 }
 
@@ -111,10 +113,12 @@ static off_t get_data_offset(off_t offset)
 {
    int ret;
    off_t target = 0;
+   off_t seek = 0;
 
-   offset = header_size + sizeof(virtual_size) + offset / DATA_BLOCK_SIZE * sizeof(offset);
-   fseeko(fp, offset, SEEK_SET);
+   seek = header_size + sizeof(virtual_size) + offset / DATA_BLOCK_SIZE * sizeof(offset);
+   fseeko(fp, seek, SEEK_SET);
    ret = fread(&target, sizeof(target), 1, fp);
+
    if (ret < 0) return 0;
 
    return target;
@@ -140,7 +144,6 @@ static off_t create_data_offset(off_t offset)
 static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     if (strcmp(path, dynfilefs_path) != 0) return -ENOENT;
-
     off_t tot = 0;
     off_t data_offset;
     off_t len = 0;
@@ -151,22 +154,20 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
 
     while (tot < size)
     {
+        rd = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
+        if (tot + rd > size) rd = size - tot;
+        len = rd;
+
         data_offset = get_data_offset(offset);
         if (data_offset != 0)
         {
-           rd = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
-           if (tot + rd > size) rd = size - tot;
            fseeko(fp, data_offset + (offset % DATA_BLOCK_SIZE), SEEK_SET);
            len = fread(buf, 1, rd, fp);
+           if (len <= 0) return with_unlock(-errno);
         }
-
-        if (len < 0) return with_unlock(-errno);
-
-        if (len == 0 || data_offset == 0)
-        {
-           len = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
+        else
            memset(buf, 0, len);
-        }
+
         tot += len;
         buf += len;
         offset += len;
@@ -231,6 +232,9 @@ static struct fuse_operations dynfilefs_oper = {
 
 static void usage(char * cmd)
 {
+       printf("\n");
+       printf("%s\n", header);
+       printf("\n");
        printf("usage: %s [storage_file] [sizeMB] [mountpoint]\n", cmd);
        printf("\n");
        printf("Mount filesystem to [mountpoint], provide a virtual file [mountpoint]/virtual.dat of size [sizeMB]\n");

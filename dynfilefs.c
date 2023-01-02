@@ -46,17 +46,12 @@ static int with_unlock(int err)
 
 static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
-   (void) path;
-   (void) isdatasync;
-   (void) fi;
    fflush(fp);
    return 0;
 }
 
 static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
 {
-   (void) path;
-   (void) fi;
    fflush(fp);
    return 0;
 }
@@ -82,9 +77,6 @@ static int dynfilefs_getattr(const char *path, struct stat *stbuf)
 
 static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-	(void) offset;
-	(void) fi;
-
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
@@ -101,7 +93,6 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 	if (strcmp(path, dynfilefs_path) != 0)
 		return -ENOENT;
 
-        (void) fi;
 	return 0;
 }
 
@@ -143,12 +134,12 @@ static off_t create_data_offset(off_t offset)
 
 static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
+
     if (strcmp(path, dynfilefs_path) != 0) return -ENOENT;
     off_t tot = 0;
     off_t data_offset;
     off_t len = 0;
     off_t rd;
-    (void) fi;
 
     pthread_mutex_lock(&dynfilefs_mutex);
 
@@ -163,7 +154,8 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
         {
            fseeko(fp, data_offset + (offset % DATA_BLOCK_SIZE), SEEK_SET);
            len = fread(buf, 1, rd, fp);
-           if (len <= 0) return with_unlock(-errno);
+           if (len == 0) { len = rd; memset(buf, 0, len); }
+           if (len < 0) return with_unlock(-errno);
         }
         else
            memset(buf, 0, len);
@@ -187,15 +179,15 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     off_t data_offset;
     off_t len;
     off_t wr;
-    (void) fi;
 
     pthread_mutex_lock(&dynfilefs_mutex);
 
     while (tot < size)
     {
-       data_offset = get_data_offset(offset);
        wr = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
        if (tot + wr > size) wr = size - tot;
+
+       data_offset = get_data_offset(offset);
 
        // skip writing empty blocks if not already exist
        if (!memcmp(&empty, buf, wr) && data_offset == 0)
@@ -219,6 +211,30 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     return tot;
 }
 
+static void dynfilefs_destroy(void *fi)
+{
+   fflush(fp);
+   fclose(fp);
+}
+
+static int dynfilefs_release(const char *path, struct fuse_file_info *fi)
+{
+   fflush(fp);
+   return 0;
+}
+
+static int dynfilefs_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi, unsigned int flags, void *data)
+{
+   fflush(fp);
+   return 0;
+}
+
+static int dynfilefs_truncate(const char *path, off_t size)
+{
+   fflush(fp);
+   return 0;
+}
+
 
 static struct fuse_operations dynfilefs_oper = {
 	.getattr	= dynfilefs_getattr,
@@ -228,6 +244,10 @@ static struct fuse_operations dynfilefs_oper = {
 	.write		= dynfilefs_write,
 	.fsync		= dynfilefs_fsync,
 	.flush		= dynfilefs_flush,
+	.release	= dynfilefs_release,
+	.ioctl		= dynfilefs_ioctl,
+	.destroy	= dynfilefs_destroy,
+	.truncate	= dynfilefs_truncate,
 };
 
 static void usage(char * cmd)

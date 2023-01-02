@@ -1,6 +1,6 @@
-This can be statically compiled with buildroot.
+DynFileFS can be statically compiled with buildroot.
 Just copy all files from here to, for example, packages/unionfs in buildroot and select unionfs for compilation.
-I do not bother providing proper way to integrate this into buildroot, sorry :)
+I do not bother providing proper way to integrate this into buildroot, sorry, just replace unionfs with this :)
 
 Problem is, buildroot is configured so that libfuse and fuse* filesystems cannot be statically compiled (uclibc problem)
 You need to change the following:

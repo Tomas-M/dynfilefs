@@ -4,10 +4,10 @@
 #
 ################################################################################
 
-UNIONFS_VERSION = 3.3
-UNIONFS_SOURCE = dynfilefs-v3.3.tar.gz
-UNIONFS_SITE = https://github.com/Tomas-M/dynfilefs/archive/refs/tags
-UNIONFS_LICENSE = BSD-3-Clause
+UNIONFS_VERSION = master
+UNIONFS_SOURCE = master.tar.gz
+UNIONFS_SITE = https://github.com/Tomas-M/dynfilefs/archive/refs/heads/
+UNIONFS_LICENSE = GPLv2
 UNIONFS_DEPENDENCIES = libfuse host-pkgconf
 UNIONFS_MAKE_OPTS = LDFLAGS=-static
 

@@ -223,12 +223,6 @@ static int dynfilefs_release(const char *path, struct fuse_file_info *fi)
    return 0;
 }
 
-static int dynfilefs_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi, unsigned int flags, void *data)
-{
-   fflush(fp);
-   return 0;
-}
-
 static int dynfilefs_truncate(const char *path, off_t size)
 {
    fflush(fp);
@@ -245,7 +239,6 @@ static struct fuse_operations dynfilefs_oper = {
 	.fsync		= dynfilefs_fsync,
 	.flush		= dynfilefs_flush,
 	.release	= dynfilefs_release,
-	.ioctl		= dynfilefs_ioctl,
 	.destroy	= dynfilefs_destroy,
 	.truncate	= dynfilefs_truncate,
 };

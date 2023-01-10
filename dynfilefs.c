@@ -255,11 +255,13 @@ static void usage(char * cmd)
        printf("Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]\n");
        printf("All changes made to virtual.dat file are stored to [storage_file]\n");
        printf("\n");
-       printf("  [storage_file]    - path to a file where all changes will be stored.\n");
-       printf("  [size_MB]         - virtual.dat will be size_MB * 1024 * 1024 bytes long\n");
-       printf("                    - this parameter is ignored if [storage_file] already exists\n");
+       printf("  [storage_file]    - Path to a file where all changes will be stored.\n");
+       printf("                    - If file exists, it will be used.\n");
+       printf("                    - If file does not exist, it will be created empty.\n");
+       printf("  [size_MB]         - Virtual.dat will be size_MB * 1024 * 1024 bytes long\n");
+       printf("                    - This parameter is ignored if [storage_file] already exists\n");
        printf("                      since in that case, the size is read from the storage_file\n");
-       printf("  [split_size_MB ]  - maximum file size for storage_file. If it grows bigger,\n");
+       printf("  [split_size_MB ]  - Maximum file size for storage_file. If it grows bigger,\n");
        printf("                      new file(s) will be created to store more changes.\n");
        printf("\n");
        printf("Example usage:\n");
@@ -281,7 +283,7 @@ int main(int argc, char *argv[])
     int debug=0;
 
     off_t sizeMB = 0;
-    off_t splitSize = 4 * 1000 * 1000 * 1000;
+    off_t split_size = 4000;
 
     while (1)
     {
@@ -290,9 +292,9 @@ int main(int argc, char *argv[])
            {"write",        required_argument, 0, 'w' },
            {"mountdir",     required_argument, 0, 'm' },
            {"virtsize",     required_argument, 0, 'v' },
-           {"splitsize",    required_argument, 0, 's' },
+           {"split_size",    required_argument, 0, 's' },
            {"debug",        no_argument,       0, 'd' },
-           {0,              0,                 0, 0 }
+           {0,              0,                 0,  0 }
        };
 
        int c = getopt_long(argc, argv, "s:c:m:d",long_options, &option_index);
@@ -313,7 +315,7 @@ int main(int argc, char *argv[])
                break;
 
            case 's':
-               splitSize = atoi(optarg);
+               split_size = atoi(optarg);
                break;
 
            case 'd':
@@ -326,6 +328,7 @@ int main(int argc, char *argv[])
 
     header_size = strlen(header);
     virtual_size = sizeMB * 1024 * 1024;
+    split_size = split_size * 1024 * 1024;
 
     // The following line ensures that the process is not killed by systemd
     // on shutdown, it is necessary to keep process running if root filesystem

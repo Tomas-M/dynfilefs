@@ -282,7 +282,7 @@ int main(int argc, char *argv[])
     int ret=0;
     int debug=0;
 
-    off_t sizeMB = 0;
+    off_t size_MB = 0;
     off_t split_size = 4000;
 
     while (1)
@@ -311,7 +311,7 @@ int main(int argc, char *argv[])
                break;
 
            case 'v':
-               sizeMB = atoi(optarg);
+               size_MB = atoi(optarg);
                break;
 
            case 's':
@@ -327,7 +327,7 @@ int main(int argc, char *argv[])
     if (!strcmp(save_path,"")) { usage(argv[0]); return 10; }
 
     header_size = strlen(header);
-    virtual_size = sizeMB * 1024 * 1024;
+    virtual_size = size_MB * 1024 * 1024;
     split_size = split_size * 1024 * 1024;
 
     // The following line ensures that the process is not killed by systemd

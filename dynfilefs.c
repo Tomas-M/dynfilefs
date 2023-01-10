@@ -21,11 +21,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <getopt.h>
 #include <wait.h>
 
-static const char *dynfilefs_path = "/virtual.dat";
-static const char *save_path = "changes.dat";
-static const char *header = "DynfilefsFS 3.00 (c) 2023 Tomas M <www.slax.org>";
+static char *dynfilefs_path = "/virtual.dat";
+static char *save_path = "";
+static char *mount_dir = "";
+static char *header = "DynfilefsFS 3.00 (c) 2023 Tomas M <www.slax.org>";
 off_t virtual_size = 0;
 off_t header_size = 0;
 off_t last_block_offset = 0;
@@ -248,47 +250,79 @@ static void usage(char * cmd)
        printf("\n");
        printf("%s\n", header);
        printf("\n");
-       printf("usage: %s [storage_file] [sizeMB] [mountpoint]\n", cmd);
+       printf("usage: %s -w storage_file -v size_MB -m mount_dir -s split_size_MB\n", cmd);
        printf("\n");
-       printf("Mount filesystem to [mountpoint], provide a virtual file [mountpoint]/virtual.dat of size [sizeMB]\n");
+       printf("Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]\n");
        printf("All changes made to virtual.dat file are stored to [storage_file]\n");
        printf("\n");
-       printf("  [storage_file] - path to a file where all changes will be stored.\n");
-       printf("  [sizeMB]       - virtual.dat will be sizeMB * 1024 * 1024 bytes long\n");
-       printf("                 - this parameter is ignored if [storage_file] already exists\n");
-       printf("                   since in that case, the size is read from the storage_file\n");
+       printf("  [storage_file]    - path to a file where all changes will be stored.\n");
+       printf("  [size_MB]         - virtual.dat will be size_MB * 1024 * 1024 bytes long\n");
+       printf("                    - this parameter is ignored if [storage_file] already exists\n");
+       printf("                      since in that case, the size is read from the storage_file\n");
+       printf("  [split_size_MB ]  - maximum file size for storage_file. If it grows bigger,\n");
+       printf("                      new file(s) will be created to store more changes.\n");
        printf("\n");
        printf("Example usage:\n");
        printf("\n");
-       printf("  # %s /tmp/changes.dat 1024 /mnt\n", cmd);
+       printf("  # %s -w /tmp/changes.dat -v 1024 -m /mnt\n", cmd);
        printf("  # mke2fs -F /mnt/virtual.dat\n");
-       printf("  # mount -o loop,sync /mnt/virtual.dat /mnt\n");
+       printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
        printf("Be aware that the [storage_file] has about 2 MB overhead for each 1GB of data,\n");
-       printf("thus the size of [storage_file] will be little bigger than [sizeMB] specified.\n");
+       printf("thus the size of [storage_file] will be little bigger than [size_MB] specified.\n");
        printf("This is important if you plan to save [storage_file] on VFAT,\n");
-       printf("since VFAT has 4GB file size limit, so you need to use sizeMB <= 4087\n");
-       printf("on VFAT due to the overhead.\n");
+       printf("since VFAT has 4GB file size limit, so you need to use -s 4000 on VFAT,\n");
+       printf("or you need to limit the [size_MB] to -v 4000\n");
 }
 
 int main(int argc, char *argv[])
 {
-    int ret;
+    int ret=0;
+    int debug=0;
 
-    if (argc < 4)
+    off_t sizeMB = 0;
+    off_t splitSize = 4 * 1000 * 1000 * 1000;
+
+    while (1)
     {
-       usage(argv[0]);
-       return 11;
+       int option_index = 0;
+       static struct option long_options[] = {
+           {"write",        required_argument, 0, 'w' },
+           {"mountdir",     required_argument, 0, 'm' },
+           {"virtsize",     required_argument, 0, 'v' },
+           {"splitsize",    required_argument, 0, 's' },
+           {"debug",        no_argument,       0, 'd' },
+           {0,              0,                 0, 0 }
+       };
+
+       int c = getopt_long(argc, argv, "s:c:m:d",long_options, &option_index);
+       if (c == -1)  break;
+
+       switch (c) 
+       {
+           case 'w':
+               save_path = optarg;
+               break;
+
+           case 'm':
+               mount_dir = optarg;
+               break;
+
+           case 'v':
+               sizeMB = atoi(optarg);
+               break;
+
+           case 's':
+               splitSize = atoi(optarg);
+               break;
+
+           case 'd':
+               debug = 1;
+               break;
+        }
     }
 
-    off_t sizeMB = atoi(argv[2]);
-    if (sizeMB <= 0)
-    {
-       usage(argv[0]);
-       return 12;
-    }
-
-    save_path = argv[1];
+    if (!strcmp(save_path,"")) { usage(argv[0]); return 10; }
 
     header_size = strlen(header);
     virtual_size = sizeMB * 1024 * 1024;
@@ -299,10 +333,14 @@ int main(int argc, char *argv[])
     argv[0][0] = '@';
 
     // we're fooling fuse here that we got only one parameter - mountdir
-    argv[1] = argv[3];
-    //argv[2] = "-d";  // uncomment for debug
+    argv[1] = mount_dir;
     argc=2;
-    //argc=3; // uncomment for debug
+
+    if (debug)
+    {
+       argv[2] = "-d";
+       argc = 3;
+    }
 
     // open existing changes file
     fp = fopen(save_path, "r+");
@@ -341,6 +379,8 @@ int main(int argc, char *argv[])
     }
     else // file does not exist yet or cannot be opened, attempt to create it
     {
+       if (virtual_size <= 0) { printf("You must provide virtual file size for new storage file.\n"); return 11; }
+
        fp = fopen(save_path, "w+");
        if (fp == NULL)
        {

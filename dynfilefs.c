@@ -40,8 +40,8 @@ static pthread_mutex_t dynfilefs_mutex;
 #define MAX_SPLIT_FILES 1000
 #define DATA_BLOCK_SIZE 4096
 
-FILE * files[MAX_SPLIT_FILES];
-off_t last_block_offsets[MAX_SPLIT_FILES];
+FILE * files[MAX_SPLIT_FILES] = {0};
+off_t last_block_offsets[MAX_SPLIT_FILES] = {0};
 
 static char empty[DATA_BLOCK_SIZE];
 
@@ -285,10 +285,6 @@ static void usage(char * cmd)
 
 int main(int argc, char *argv[])
 {
-    // initialize
-    int i;
-    for (i = 0; i < MAX_SPLIT_FILES; i++) files[i] = 0;
-
     int ret=0;
 
     while (1)

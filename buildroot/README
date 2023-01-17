@@ -10,3 +10,6 @@ Toolchain -> C library -> musl
 
 Then you need to remove BR2_STATIC_LIBS references in packages/libfuse/Config.in
 and update packages/libfuse/libfuse.mk to copy libfuse.* instead of libfuse.so* to target
+
+Then make
+Then you can find compiled binary dybfilefs in ./output/build/unionfs-master

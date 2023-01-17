@@ -309,7 +309,7 @@ static void usage(char * cmd)
        printf("  # mke2fs -F /mnt/virtual.dat\n");
        printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (0.2%)\n");
+       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (0.2%%)\n");
        printf("\n");
 }
 

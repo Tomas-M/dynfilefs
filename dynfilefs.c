@@ -285,7 +285,7 @@ static void usage(char * cmd)
        printf("usage: %s -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_MB ] [ -d ]\n", cmd);
        printf("\n");
        printf("Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]\n");
-       printf("All changes made to virtual.dat file are stored to [storage_file]\n");
+       printf("All changes made to virtual.dat file are stored to [storage_file] file(s)\n");
        printf("\n");
        printf("  -d                       - Do not fork to background, debug mode\n");
        printf("\n");
@@ -300,8 +300,8 @@ static void usage(char * cmd)
        printf("  --split [split_size_MB]\n");
        printf("  -p [split_size_MB ]      - Maximum data size per storage_file. Multiple storage files\n");
        printf("                             will be created if [size_MB] > [split_size_MB].\n");
-       printf("                             Beware that actual file size (including offset index) may be\n");
-       printf("                             bigger for each file, so use max 4000 on FAT32 to be safe.\n");
+       printf("                             Beware that actual file size (including index of offsets) may be\n");
+       printf("                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe.\n");
        printf("\n");
        printf("Example usage:\n");
        printf("\n");
@@ -309,7 +309,7 @@ static void usage(char * cmd)
        printf("  # mke2fs -F /mnt/virtual.dat\n");
        printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("The [storage_file] has about 2 MB overhead for each 1GB of data\n");
+       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (0.2%)\n");
        printf("\n");
 }
 

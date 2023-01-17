@@ -373,7 +373,7 @@ int main(int argc, char *argv[])
     char format[10]={};
     char ext_length[12]={};
     sprintf(ext_length, "%i", max_files);
-    sprintf(format, "%%s.%%0%lii", strlen(ext_length));
+    sprintf(format, "%%s.%%0%lii", (long)strlen(ext_length));
 
     for (int i=0; i<max_files; i++)
     {
@@ -397,19 +397,19 @@ int main(int argc, char *argv[])
           }
           if (meta.version != format_version)
           {
-             printf("The existing storage file %s is using incompatible data format version %li. Current version is %li. This is an error.\n", storage_file_path, meta.version, format_version);
+             printf("The existing storage file %s is using incompatible data format version %lli. Current version is %lli. This is an error.\n", storage_file_path, (long long)meta.version, (long long)format_version);
              return 1;
           }
 
           if (meta.split_size!=split_size)
           {
-             printf("The existing storage file %s was created using split size of %li. But you requested split size of %li. This is an error. Use the same split size.\n", storage_file_path, meta.virtual_size/1024/1024, virtual_size/1024/1024);
+             printf("The existing storage file %s was created using split size of %lli. But you requested split size of %lli. This is an error. Use the same split size.\n", storage_file_path, (long long)meta.split_size/1024/1024, (long long)split_size/1024/1024);
              return 1;
           }
 
           if (meta.virtual_size!=virtual_size)
           {
-             printf("The existing storage file %s was created using virtual size of %li. But you requested virtual size of %li. This is an error. Use the same size.\n", storage_file_path, meta.virtual_size/1024/1024, virtual_size/1024/1024);
+             printf("The existing storage file %s was created using virtual size of %lli. But you requested virtual size of %lli. This is an error. Use the same size.\n", storage_file_path, (long long)meta.virtual_size/1024/1024, (long long)virtual_size/1024/1024);
              return 1;
           }
 

@@ -35,5 +35,5 @@ Example usage:
 
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
-Latest version is 4.00 (2023)
+Latest version is 4.01 (2023)
 

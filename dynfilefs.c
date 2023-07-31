@@ -57,6 +57,7 @@ int debug=0;
 int meta_header_offset = DATA_BLOCK_SIZE / 2;
 
 pthread_mutex_t dynfilefs_mutex;
+FILE * mainfile;
 FILE * files[MAX_SPLIT_FILES] = {0};
 off_t last_block_offsets[MAX_SPLIT_FILES] = {0};
 
@@ -296,12 +297,16 @@ static void usage(char * cmd)
        printf("\n");
        printf("  --size [size_MB]\n");
        printf("  -s [size_MB]             - The virtual.dat file will be size_MB big\n");
+       printf("                           - This parameter is ignored if storage file exists,\n");
+       printf("                             in that case the previous stored value is reused.\n");
        printf("\n");
        printf("  --split [split_size_MB]\n");
        printf("  -p [split_size_MB ]      - Maximum data size per storage_file. Multiple storage files\n");
        printf("                             will be created if [size_MB] > [split_size_MB].\n");
        printf("                             Beware that actual file size (including index of offsets) may be\n");
        printf("                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe.\n");
+       printf("                           - This parameter is ignored if storage file exists,\n");
+       printf("                             in that case the previous stored value is reused.\n");
        printf("\n");
        printf("Example usage:\n");
        printf("\n");
@@ -360,8 +365,62 @@ int main(int argc, char *argv[])
 
     virtual_size = size_MB * 1024 * 1024;
     split_size = split_size_MB * 1024 * 1024;
-
     if (split_size <= 0) split_size = virtual_size;
+
+    // open main file when it exists
+    mainfile = fopen(storage_file, "r+");
+    if (mainfile != NULL)
+    {
+       struct metaStruct meta = {};
+
+       // check version and other parameters
+       fseeko(mainfile, meta_header_offset, SEEK_SET);
+       ret = fread(&meta,sizeof(meta),1,mainfile);
+       if (ret < 0)
+       {
+          printf("cannot read header metadata from file %s\n", storage_file);
+          return 1;
+       }
+       if (meta.version != format_version)
+       {
+          printf("The existing storage file %s is using incompatible data format version %lli. Current version is %lli. This is an error.\n", storage_file, (long long)meta.version, (long long)format_version);
+          return 1;
+       }
+
+       split_size=meta.split_size;
+       virtual_size=meta.virtual_size;
+    }
+    else // file does not exist yet, attempt to create it
+    {
+       if (virtual_size <= 0) { printf("You must provide virtual file size for new storage file.\n"); return 1; }
+
+       mainfile = fopen(storage_file, "w+");
+       if (mainfile == NULL)
+       {
+          printf("cannot open %s for writing\n", storage_file);
+          return 1;
+       }
+
+       // write full header (empty)
+       fwrite(header,sizeof(header),1,mainfile);
+
+       // write banner to header
+       fseeko(mainfile, 0, SEEK_SET);
+       fwrite(banner,strlen(banner),1,mainfile);
+
+       // write version to header
+       struct metaStruct meta = {version: format_version, split_size: split_size, virtual_size: virtual_size};
+       fseeko(mainfile, meta_header_offset, SEEK_SET);
+       ret = fwrite(&meta,sizeof(meta),1,mainfile);
+       if (ret < 0)
+       {
+          printf("cannot write to %s\n", storage_file);
+          return 1;
+       }
+    }
+    fclose(mainfile);
+
+
     if (virtual_size > split_size) max_files = virtual_size / split_size + ( virtual_size % split_size > 0 ? 1 : 0);
     offset_block_size = split_size / DATA_BLOCK_SIZE * sizeof(off_t);
 

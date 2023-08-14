@@ -8,6 +8,10 @@ All changes made to virtual.dat file are stored to [storage_file] file(s)
 
     -d                       - Do not fork to background, debug mode
 
+    --mountdir [mount_dir]
+    -m [mount_dir]           - Path to a directory where the fileszstem will be mounted
+                             - The directory must be empty, else it will refuse to mount
+
     --file [storage_file]
     -f [storage_file]        - Path to a file where all changes will be stored
                              - If file exists, it will be used
@@ -39,7 +43,7 @@ How to compile statically:
 
     DynFileFS can be statically compiled with buildroot, but it's a bit tricky.
     Read buildroot/README for more information. Tested on buildroot-2022.02.8
-
+    Pre-built static binary for newest version can be found in ./static/ directory.
 
 
 

@@ -292,7 +292,7 @@ static void usage(char * cmd)
        printf("\n");
        printf("  --mountdir [mount_dir]\n");
        printf("  -m [mount_dir]           - Path to a directory where the fileszstem will be mounted\n");
-       printf("                           - If directory is not empty, it will fail\n");
+       printf("                           - The directory must be empty, else it will refuse to mount\n");
        printf("\n");
        printf("  --file [storage_file]\n");
        printf("  -f [storage_file]        - Path to a file where all changes will be stored\n");

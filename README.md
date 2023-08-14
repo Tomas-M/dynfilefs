@@ -29,11 +29,23 @@ Example usage:
     mount -o loop /mnt/virtual.dat /mnt
 
 
+How to compile:
+
+    ./configure
+    make
+
+
+How to compile statically:
+
+    DynFileFS can be statically compiled with buildroot, but it's a bit tricky.
+    Read buildroot/README for more information. Tested on buildroot-2022.02.8
+
+
 
 
 # WARNING!
 
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
-Latest version is 4.01 (2023)
+Latest version is 4.02 (2023)
 

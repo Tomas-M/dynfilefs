@@ -419,6 +419,7 @@ int main(int argc, char *argv[])
        }
     }
     fclose(mainfile);
+    utime(storage_file,NULL);
 
 
     if (virtual_size > split_size) max_files = virtual_size / split_size + ( virtual_size % split_size > 0 ? 1 : 0);

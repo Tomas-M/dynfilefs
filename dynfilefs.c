@@ -290,6 +290,10 @@ static void usage(char * cmd)
        printf("\n");
        printf("  -d                       - Do not fork to background, debug mode\n");
        printf("\n");
+       printf("  --mountdir [mount_dir]\n");
+       printf("  -m [mount_dir]           - Path to a directory where the fileszstem will be mounted\n");
+       printf("                           - If directory is not empty, it will fail\n");
+       printf("\n");
        printf("  --file [storage_file]\n");
        printf("  -f [storage_file]        - Path to a file where all changes will be stored\n");
        printf("                           - If file exists, it will be used\n");

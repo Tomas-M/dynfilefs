@@ -52,4 +52,4 @@ How to compile statically:
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
 Latest version is 4.03 (2023)
-
+Releases can be found here: https://github.com/Tomas-M/dynfilefs/releases

@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <getopt.h>
@@ -59,6 +60,7 @@ int meta_header_offset = DATA_BLOCK_SIZE / 2;
 pthread_mutex_t dynfilefs_mutex;
 FILE * mainfile;
 FILE * files[MAX_SPLIT_FILES] = {0};
+char * indexes[MAX_SPLIT_FILES] = {0};
 off_t last_block_offsets[MAX_SPLIT_FILES] = {0};
 
 
@@ -132,15 +134,12 @@ static off_t get_data_offset(off_t offset)
    int ix = offset / split_size;
 
    seek = header_size + (offset - split_size * ix) / DATA_BLOCK_SIZE * sizeof(offset);
-   fseeko(files[ix], seek, SEEK_SET);
-
-   int ret = fread(&target, sizeof(target), 1, files[ix]);
-   if (ret < 0) return 0;
+   memcpy(&target, indexes[ix] + seek, sizeof(target));
 
    return target;
 }
 
-
+// this function is always called when write operation is locked
 static off_t create_data_offset(off_t offset)
 {
    off_t seek = 0;
@@ -149,10 +148,7 @@ static off_t create_data_offset(off_t offset)
    last_block_offsets[ix] += DATA_BLOCK_SIZE;
 
    seek = header_size + (offset - split_size * ix) / DATA_BLOCK_SIZE * sizeof(offset);
-   fseeko(files[ix], seek, SEEK_SET);
-
-   int ret = fwrite(&last_block_offsets[ix], sizeof(last_block_offsets[ix]), 1, files[ix]);
-   if (ret < 0) return 0;
+   memcpy(indexes[ix] + seek, &last_block_offsets[ix], sizeof(last_block_offsets[ix]));
 
    return last_block_offsets[ix];
 }
@@ -167,8 +163,6 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
     off_t rd;
     int ix;
 
-    pthread_mutex_lock(&dynfilefs_mutex);
-
     while (tot < size)
     {
         ix = offset / split_size;
@@ -180,10 +174,9 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
         data_offset = get_data_offset(offset);
         if (data_offset != 0)
         {
-           fseeko(files[ix], data_offset + (offset % DATA_BLOCK_SIZE), SEEK_SET);
-           len = fread(buf, 1, rd, files[ix]);
+           len = pread(fileno(files[ix]), buf, rd, data_offset + (offset % DATA_BLOCK_SIZE));
            if (len == 0) { len = rd; memset(buf, 0, len); }
-           if (len < 0) return with_unlock(-errno);
+           if (len < 0) return -errno;
         }
         else
            memset(buf, 0, len);
@@ -193,14 +186,13 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
         offset += len;
     }
 
-    pthread_mutex_unlock(&dynfilefs_mutex);
     return tot;
 }
 
 
 static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    if (offset + size > virtual_size) return with_unlock(-ENOSPC); // do not allow to write beyond file size
+    if (offset + size > virtual_size) return -ENOSPC; // do not allow to write beyond file size
 
     off_t tot = 0;
     off_t data_offset;
@@ -208,14 +200,15 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     off_t wr;
     int ix;
 
-    pthread_mutex_lock(&dynfilefs_mutex);
-
     while (tot < size)
     {
        ix = offset / split_size;
 
        wr = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
        if (tot + wr > size) wr = size - tot;
+       len=0;
+
+       pthread_mutex_lock(&dynfilefs_mutex);
 
        data_offset = get_data_offset(offset);
 
@@ -228,16 +221,21 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        {
           if (data_offset == 0) data_offset = create_data_offset(offset);
           if (data_offset == 0) return with_unlock(-ENOSPC); // write error, not enough free space
-          fseeko(files[ix], data_offset + (offset % DATA_BLOCK_SIZE), SEEK_SET);
-          len = fwrite(buf, 1, wr, files[ix]);
-          if (len <= 0) return with_unlock(-errno);
        }
+
+       pthread_mutex_unlock(&dynfilefs_mutex);
+
+       if (len == 0)
+       {
+          len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
+          if (len <= 0) return -errno;
+       }
+
        tot += len;
        buf += len;
        offset += len;
     }
 
-    pthread_mutex_unlock(&dynfilefs_mutex);
     return tot;
 }
 
@@ -515,9 +513,9 @@ int main(int argc, char *argv[])
           fwrite("\0",1,1,files[i]);
           fflush(files[i]);
        }
+
+       indexes[i] = mmap(NULL, header_size + offset_block_size, PROT_READ|PROT_WRITE, MAP_SHARED, fileno(files[i]), 0);
     }
-
-
 
     // The following line ensures that the process is not killed by systemd
     // on shutdown, it is necessary to keep process running if root filesystem

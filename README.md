@@ -51,5 +51,5 @@ How to compile statically:
 
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
-Latest version is 4.02 (2023)
+Latest version is 4.03 (2023)
 

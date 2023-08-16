@@ -25,7 +25,7 @@
 #include <getopt.h>
 #include <wait.h>
 
-#define MAX_SPLIT_FILES 9999
+#define MAX_SPLIT_FILES 999
 #define DATA_BLOCK_SIZE 4096
 
 char *dynfilefs_path = "/virtual.dat";
@@ -388,7 +388,20 @@ int main(int argc, char *argv[])
        }
 
        split_size=meta.split_size;
-       virtual_size=meta.virtual_size;
+       if (virtual_size<=meta.virtual_size) virtual_size=meta.virtual_size;
+
+       // if virtual size was changed, write it to main file
+       if (meta.virtual_size!=virtual_size)
+       {
+          meta.virtual_size=virtual_size;
+          fseeko(mainfile, meta_header_offset, SEEK_SET);
+          ret = fwrite(&meta,sizeof(meta),1,mainfile);
+          if (ret < 0)
+          {
+             printf("cannot update header metadata for new virtual size in file %s\n", storage_file);
+             return 1;
+          }
+       }
     }
     else // file does not exist yet, attempt to create it
     {
@@ -421,7 +434,6 @@ int main(int argc, char *argv[])
     fclose(mainfile);
     utime(storage_file,NULL);
 
-
     if (virtual_size > split_size) max_files = virtual_size / split_size + ( virtual_size % split_size > 0 ? 1 : 0);
     offset_block_size = split_size / DATA_BLOCK_SIZE * sizeof(off_t);
 
@@ -429,17 +441,10 @@ int main(int argc, char *argv[])
 
     char storage_file_path[4096];
 
-    // build the format for file extension. Like .01 .02 or .001 .002 etc
-    char format[10]={};
-    char ext_length[12]={};
-    sprintf(ext_length, "%i", max_files);
-    sprintf(format, "%%s.%%0%lii", (long)strlen(ext_length));
-
     for (int i=0; i<max_files; i++)
     {
        memset(storage_file_path,0,sizeof(storage_file_path));
-       if (max_files == 1) sprintf(storage_file_path, "%s", storage_file);
-       else sprintf(storage_file_path, format, storage_file, i);
+       sprintf(storage_file_path, "%s.%i", storage_file, i);
 
        // open existing changes file
        files[i] = fopen(storage_file_path, "r+");
@@ -469,8 +474,14 @@ int main(int argc, char *argv[])
 
           if (meta.virtual_size!=virtual_size)
           {
-             printf("The existing storage file %s was created using virtual size of %lli. But you requested virtual size of %lli. This is an error. Use the same size.\n", storage_file_path, (long long)meta.virtual_size/1024/1024, (long long)virtual_size/1024/1024);
-             return 1;
+             meta.virtual_size=virtual_size;
+             fseeko(files[i], meta_header_offset, SEEK_SET);
+             ret = fwrite(&meta,sizeof(meta),1,files[i]);
+             if (ret < 0)
+             {
+                printf("cannot update header metadata for new virtual size in file %s\n", storage_file_path);
+                return 1;
+             }
           }
 
           // calculate new last_block_offsets after index of offsets

@@ -539,8 +539,8 @@ int main(int argc, char *argv[])
 
     if (debug) // or maybe two parameters, debug
     {
-       argv[2] = "-d";
-       argc = 3;
+       argv[argc] = "-d";
+       argc++;
     }
 
     return fuse_main(argc, argv, &dynfilefs_oper, NULL);

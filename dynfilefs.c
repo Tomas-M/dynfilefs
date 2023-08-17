@@ -25,7 +25,7 @@
 #include <getopt.h>
 #include <wait.h>
 
-#define MAX_SPLIT_FILES 999
+#define MAX_SPLIT_FILES 9999
 #define DATA_BLOCK_SIZE 4096
 
 char *dynfilefs_path = "/virtual.dat";

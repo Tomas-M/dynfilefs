@@ -37,6 +37,7 @@ char empty[DATA_BLOCK_SIZE] = {};
 
 off_t size_MB = 0;
 off_t split_size_MB = 0;
+off_t increase_size_MB = 0;
 
 off_t format_version=400;
 off_t virtual_size = 0;
@@ -281,30 +282,44 @@ static void usage(char * cmd)
        printf("\n");
        printf("usage: %s -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_MB ] [ -d ]\n", cmd);
        printf("\n");
-       printf("Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]\n");
-       printf("All changes made to virtual.dat file are stored to [storage_file] file(s)\n");
+       printf("This command mounts a virtual filesystem to [mount_dir], creating a virtual file [mount_dir]/virtual.dat\n");
+       printf("with a specified size in MB [size_MB]. All modifications to this virtual.dat file are then stored to disk,\n");
+       printf("to files with [storge_file] base name.\n");
        printf("\n");
-       printf("  -d                       - Do not fork to background, debug mode\n");
+       printf("Metadata related to the virtual.dat file is saved to the [storage_file] itself,\n");
+       printf("while actual data modifications are stored in separate files with the same base name,\n");
+       printf("each having incremented extension (e.g., .0, .1, .2), depending on the specified split_size.\n");
+       printf("\n");
+       printf("The following parameters can be provided:\n\n");
+       printf("\n");
+       printf("  -d                       - Debug mode; do not fork to background\n");
        printf("\n");
        printf("  --mountdir [mount_dir]\n");
-       printf("  -m [mount_dir]           - Path to a directory where the fileszstem will be mounted\n");
-       printf("                           - The directory must be empty, else it will refuse to mount\n");
+       printf("  -m [mount_dir]           - Specifies the directory where the filesystem will be mounted.\n");
+       printf("                           - The directory must be empty, or the mount operation will be refused.\n");
        printf("\n");
        printf("  --file [storage_file]\n");
-       printf("  -f [storage_file]        - Path to a file where all changes will be stored\n");
-       printf("                           - If file exists, it will be used\n");
-       printf("                           - If file does not exist, it will be created empty\n");
+       printf("  -f [storage_file]        - Path to the file where changes to the virtual file will be stored.\n");
+       printf("                           - The storage file is created with the provided name to store metadata,\n");
+       printf("                             and then additional storage files are created with the same base name\n");
+       printf("                             with extension suffixes such as .0, .1, .2, etc.\n");
+       printf("                           - If the storage exists, it will be reused.\n");
        printf("\n");
        printf("  --size [size_MB]\n");
-       printf("  -s [size_MB]             - The virtual.dat file will be size_MB big\n");
-       printf("                           - This parameter is ignored if storage file exists,\n");
-       printf("                             in that case the previous stored value is reused.\n");
+       printf("  -s [size_MB]             - Sets the size of the virtual.dat file in MB.\n");
+       printf("                           - If storage file exists, you can specify bigger size_MB than before,\n");
+       printf("                             in that case the size of virtual file will be enlarged.\n");
+       printf("                           - If the specified size_MB is smaller than before, it will be ignored\n");
+       printf("                             and the previous stored value of size_MB will be reused.\n");
+       printf("                           - If the size is specified as +size_MB (note the plus sign prefix),\n");
+       printf("                             then the virtual file will grow by size_MB if storage_file exists.\n");
        printf("\n");
        printf("  --split [split_size_MB]\n");
-       printf("  -p [split_size_MB ]      - Maximum data size per storage_file. Multiple storage files\n");
+       printf("  -p [split_size_MB ]      - Sets the maximum data size per storage file. Multiple files\n");
        printf("                             will be created if [size_MB] > [split_size_MB].\n");
-       printf("                             Beware that actual file size (including index of offsets) may be\n");
-       printf("                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe.\n");
+       printf("                             Beware that actual file size (including internal indexes) may be\n");
+       printf("                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe,\n");
+       printf("                             because FAT32 does not support individual files bigger than 4GB.\n");
        printf("                           - This parameter is ignored if storage file exists,\n");
        printf("                             in that case the previous stored value is reused.\n");
        printf("\n");
@@ -314,7 +329,7 @@ static void usage(char * cmd)
        printf("  # mke2fs -F /mnt/virtual.dat\n");
        printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (0.2%%)\n");
+       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (that is 0.2%%)\n");
        printf("\n");
 }
 
@@ -348,6 +363,7 @@ int main(int argc, char *argv[])
                break;
 
            case 's':
+               if (optarg[0] == '+') { optarg++; increase_size_MB = abs(atoi(optarg)); }
                size_MB = abs(atoi(optarg));
                break;
 
@@ -388,6 +404,7 @@ int main(int argc, char *argv[])
        }
 
        split_size=meta.split_size;
+       if (increase_size_MB > 0) virtual_size = meta.virtual_size + (increase_size_MB * 1024 * 1024);
        if (virtual_size<=meta.virtual_size) virtual_size=meta.virtual_size;
 
        // if virtual size was changed, write it to main file

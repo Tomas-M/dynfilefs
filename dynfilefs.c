@@ -261,6 +261,16 @@ static int dynfilefs_truncate(const char *path, off_t size)
    return 0;
 }
 
+static int dynfilefs_chmod(const char *path, mode_t mode)
+{
+   return 0;
+}
+
+static int dynfilefs_chown(const char *path, uid_t uid, gid_t gid)
+{
+   return 0;
+}
+
 
 static struct fuse_operations dynfilefs_oper = {
 	.getattr	= dynfilefs_getattr,
@@ -273,6 +283,8 @@ static struct fuse_operations dynfilefs_oper = {
 	.release	= dynfilefs_release,
 	.destroy	= dynfilefs_destroy,
 	.truncate	= dynfilefs_truncate,
+	.chmod		= dynfilefs_chmod,
+	.chown		= dynfilefs_chown,
 };
 
 static void usage(char * cmd)

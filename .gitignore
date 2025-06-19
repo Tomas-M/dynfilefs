@@ -1,0 +1,17 @@
+.deps/dynfilefs.Po
+Makefile
+Makefile.in
+config.h
+config.h.in~
+config.log
+config.status
+configure~
+dynfilefs
+dynfilefs.o
+stamp-h1
+aclocal.m4
+compile
+configure
+depcomp
+install-sh
+missing

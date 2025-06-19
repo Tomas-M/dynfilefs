@@ -6,3 +6,6 @@ AM_CFLAGS              = $(regular_CFLAGS) $(libfuse_CFLAGS)
 sbin_PROGRAMS          = dynfilefs
 dynfilefs_SOURCES      = dynfilefs.c
 dynfilefs_LDADD        = -lfuse -lpthread -lrt -ldl
+
+install-exec-hook:
+	ln -sf dynfilefs $(DESTDIR)$(sbindir)/mount.dynfilefs

@@ -293,6 +293,7 @@ static void usage(char * cmd)
        printf("%s\n", banner);
        printf("\n");
        printf("usage: %s -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_MB ] [ -d ]\n", cmd);
+       printf("       %s -o[size=size_MB][split=split_size_MB] storage_file mount_dir\n", cmd);
        printf("\n");
        printf("This command mounts a virtual filesystem to [mount_dir], creating a virtual file [mount_dir]/virtual.dat\n");
        printf("with a specified size in MB [size_MB]. All modifications to this virtual.dat file are then stored to disk,\n");
@@ -318,6 +319,7 @@ static void usage(char * cmd)
        printf("                           - If the storage exists, it will be reused.\n");
        printf("\n");
        printf("  --size [size_MB]\n");
+       printf("  -o size=[size_MB]\n");
        printf("  -s [size_MB]             - Sets the size of the virtual.dat file in MB.\n");
        printf("                           - If storage file exists, you can specify bigger size_MB than before,\n");
        printf("                             in that case the size of virtual file will be enlarged.\n");
@@ -327,6 +329,7 @@ static void usage(char * cmd)
        printf("                             then the virtual file will grow by size_MB if storage_file exists.\n");
        printf("\n");
        printf("  --split [split_size_MB]\n");
+       printf("  -o split=[split_size_MB]\n");
        printf("  -p [split_size_MB ]      - Sets the maximum data size per storage file. Multiple files\n");
        printf("                             will be created if [size_MB] > [split_size_MB].\n");
        printf("                             Beware that actual file size (including internal indexes) may be\n");
@@ -345,6 +348,30 @@ static void usage(char * cmd)
        printf("\n");
 }
 
+static void set_size_MB(const char * optarg){
+    if (optarg[0] == '+') {
+        optarg++;
+        increase_size_MB = abs(strtol(optarg, NULL, 10));
+        size_MB = increase_size_MB;
+    } else {
+        size_MB = abs(strtol(optarg, NULL, 10));
+    }
+}
+
+static void set_split_size_MB(const char * optarg){
+    split_size_MB = abs(strtol(optarg, NULL, 10));
+}
+
+static void set_option(const char * optarg, int keyind, int valueind){
+    const char * keyarg = optarg + keyind;
+    const char * valuearg = optarg + valueind;
+    if (strncmp(keyarg, "size=", 5)){
+        set_size_MB(valuearg);
+    } else if (strncmp(keyarg, "split=", 6)){
+        set_split_size_MB(valuearg);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     int ret=0;
@@ -353,6 +380,7 @@ int main(int argc, char *argv[])
     {
        int option_index = 0;
        static struct option long_options[] = {
+           {0,              required_argument, 0, 'o'},
            {"file",         required_argument, 0, 'f' },
            {"mountdir",     required_argument, 0, 'm' },
            {"size",         required_argument, 0, 's' },
@@ -373,19 +401,50 @@ int main(int argc, char *argv[])
            case 'm':
                mount_dir = optarg;
                break;
-
+           case 'o': {
+               int ind = 0;
+               char ch = optarg[ind];
+               int keyind = ind;
+               int valueind = ind;
+               while (ch != 0){
+                   if (keyind == valueind){
+                       if (ch == '='){
+                           valueind = ind + 1;
+                       }
+                   } else {
+                       if (ch == ','){
+                           set_option(optarg, keyind, valueind);
+                           keyind = ind + 1;
+                           valueind = keyind;
+                       }
+                   }
+                   ch = optarg[ind];
+               }
+               if (keyind != valueind){
+                   set_option(optarg, keyind, valueind);
+               }
+               break;
+           };
            case 's':
-               if (optarg[0] == '+') { optarg++; increase_size_MB = abs(atoi(optarg)); }
-               size_MB = abs(atoi(optarg));
+               set_size_MB(optarg);
                break;
 
            case 'p':
-               split_size_MB = abs(atoi(optarg));
+               set_split_size_MB(optarg);
                break;
 
            case 'd':
                debug = 1;
                break;
+        }
+
+        int index = optind;
+        if (index < argc) {
+            storage_file = argv[index];
+        }
+        index ++;
+        if (index < argc) {
+            mount_dir = argv[index];
         }
     }
 

@@ -48,7 +48,11 @@ Example usage:
     mke2fs -F /mnt/virtual.dat
     mount -o loop /mnt/virtual.dat /mnt
 
-
+Usage in fstab
+```
+  /var/lib/changes.dat /var/lib/changes dynfilefs size=1024,split=1000 0 0
+  /var/lib/changes/virtual.dat /extra auto loop 0 0 
+```
 How to compile:
 
     ./configure

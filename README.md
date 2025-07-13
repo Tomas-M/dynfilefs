@@ -6,25 +6,41 @@ usage: ./dynfilefs -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_M
 Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]
 All changes made to virtual.dat file are stored to [storage_file] file(s)
 
-    -d                       - Do not fork to background, debug mode
+  -d                       - Debug mode; do not fork to background
 
-    --mountdir [mount_dir]
-    -m [mount_dir]           - Path to a directory where the fileszstem will be mounted
-                             - The directory must be empty, else it will refuse to mount
+  --file [storage_file]
+  [storage_file]
+  -f [storage_file]        - Path to the file where changes to the virtual file will be stored.
+                           - The storage file is created with the provided name to store metadata,
+                             and then additional storage files are created with the same base name
+                             with extension suffixes such as .0, .1, .2, etc.
+                           - If the storage exists, it will be reused.
 
-    --file [storage_file]
-    -f [storage_file]        - Path to a file where all changes will be stored
-                             - If file exists, it will be used
-                             - If file does not exist, it will be created empty
+  --mountdir [mount_dir]
+  [mount_dir]
+  -m [mount_dir]           - Specifies the directory where the filesystem will be mounted.
+                           - The directory must be empty, or the mount operation will be refused.
 
-    --size [size_MB]
-    -s [size_MB]             - The virtual.dat file will be size_MB big
+  --size [size_MB]
+  -o size=[size_MB]
+  -s [size_MB]             - Sets the size of the virtual.dat file in MB.
+                           - If storage file exists, you can specify bigger size_MB than before,
+                             in that case the size of virtual file will be enlarged.
+                           - If the specified size_MB is smaller than before, it will be ignored
+                             and the previous stored value of size_MB will be reused.
+                           - If the size is specified as +size_MB (note the plus sign prefix),
+                             then the virtual file will grow by size_MB if storage_file exists.
 
-    --split [split_size_MB]
-    -p [split_size_MB ]      - Maximum data size per storage_file. Multiple storage files
-                               will be created if [size_MB] > [split_size_MB].
-                               Beware that actual file size (including index of offsets) may be
-                               bigger than split_size_MB, so use max 4088 on FAT32 to be safe.
+  --split [split_size_MB]
+  -o split=[split_size_MB]
+  -p [split_size_MB ]      - Sets the maximum data size per storage file. Multiple files
+                             will be created if [size_MB] > [split_size_MB].
+                             Beware that actual file size (including internal indexes) may be
+                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe,
+                             because FAT32 does not support individual files bigger than 4GB.
+                           - This parameter is ignored if storage file exists,
+                             in that case the previous stored value is reused.
+
 
 Example usage:
 

@@ -5,7 +5,7 @@ usage: ./dynfilefs -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_M
 
 Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]
 All changes made to virtual.dat file are stored to [storage_file] file(s)
-
+```
   -d                       - Debug mode; do not fork to background
 
   --file [storage_file]
@@ -40,7 +40,7 @@ All changes made to virtual.dat file are stored to [storage_file] file(s)
                              because FAT32 does not support individual files bigger than 4GB.
                            - This parameter is ignored if storage file exists,
                              in that case the previous stored value is reused.
-
+```
 
 Example usage:
 

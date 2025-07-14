@@ -55,6 +55,7 @@ Usage in fstab
 ```
 How to compile:
 
+    ./autogen.sh
     ./configure
     make
 

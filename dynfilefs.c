@@ -307,16 +307,18 @@ static void usage(char * cmd)
        printf("\n");
        printf("  -d                       - Debug mode; do not fork to background\n");
        printf("\n");
-       printf("  --mountdir [mount_dir]\n");
-       printf("  -m [mount_dir]           - Specifies the directory where the filesystem will be mounted.\n");
-       printf("                           - The directory must be empty, or the mount operation will be refused.\n");
-       printf("\n");
        printf("  --file [storage_file]\n");
+       printf("  [storage_file]\n");
        printf("  -f [storage_file]        - Path to the file where changes to the virtual file will be stored.\n");
        printf("                           - The storage file is created with the provided name to store metadata,\n");
        printf("                             and then additional storage files are created with the same base name\n");
        printf("                             with extension suffixes such as .0, .1, .2, etc.\n");
        printf("                           - If the storage exists, it will be reused.\n");
+       printf("\n");
+       printf("  --mountdir [mount_dir]\n");
+       printf("  [mount_dir]\n");
+       printf("  -m [mount_dir]           - Specifies the directory where the filesystem will be mounted.\n");
+       printf("                           - The directory must be empty, or the mount operation will be refused.\n");
        printf("\n");
        printf("  --size [size_MB]\n");
        printf("  -o size=[size_MB]\n");
@@ -375,12 +377,14 @@ static void set_option(const char * optarg, int keyind, int valueind){
 int main(int argc, char *argv[])
 {
     int ret=0;
-
+    int argument_index = 0;
+    char ** argvb = argv;
+    int argcb = argc;
     while (1)
     {
        int option_index = 0;
        static struct option long_options[] = {
-           {0,              required_argument, 0, 'o'},
+           {"options",      required_argument, 0, 'o'},
            {"file",         required_argument, 0, 'f' },
            {"mountdir",     required_argument, 0, 'm' },
            {"size",         required_argument, 0, 's' },
@@ -389,8 +393,27 @@ int main(int argc, char *argv[])
            {0,              0,                 0,  0 }
        };
 
-       int c = getopt_long(argc, argv, "f:m:s:p:d",long_options, &option_index);
-       if (c == -1)  break;
+       int c = getopt_long(argcb, argvb, "f:o:m:s:p:d",long_options, &option_index);
+
+       if (c == -1){
+           if (optind < argcb) {
+               argument_index += 1;
+               switch(argument_index){
+                   case 1:
+                       storage_file = argvb[optind];
+                       break;
+                   case 2:
+                       mount_dir = argvb[optind];
+                       break;
+               }
+               argcb -= optind;
+               argvb += optind;
+               optind = 0;
+               continue;
+           } else {
+               break;
+           }
+       }
 
        switch (c)
        {
@@ -419,6 +442,7 @@ int main(int argc, char *argv[])
                        }
                    }
                    ch = optarg[ind];
+                   ind ++;
                }
                if (keyind != valueind){
                    set_option(optarg, keyind, valueind);
@@ -435,16 +459,8 @@ int main(int argc, char *argv[])
 
            case 'd':
                debug = 1;
+           default:
                break;
-        }
-
-        int index = optind;
-        if (index < argc) {
-            storage_file = argv[index];
-        }
-        index ++;
-        if (index < argc) {
-            mount_dir = argv[index];
         }
     }
 

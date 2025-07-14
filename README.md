@@ -63,7 +63,7 @@ How to compile:
 How to compile statically:
 
     DynFileFS can be statically compiled with buildroot, but it's a bit tricky.
-    Read buildroot/README for more information. Tested on buildroot-2022.02.8
+    Read buildroot/README for more information. Tested on buildroot-2025.02.4
     Pre-built static binary for newest version can be found in ./static/ directory.
 
 

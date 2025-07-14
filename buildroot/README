@@ -1,12 +1,15 @@
 DynFileFS can be statically compiled with buildroot.
 Just copy all files from here to, for example, packages/unionfs in buildroot and select unionfs for compilation.
+Delete unionfs.hash file.
 I do not bother providing proper way to integrate this into buildroot, sorry, just replace unionfs with this :)
 
 Problem is, buildroot is configured so that libfuse and fuse* filesystems cannot be statically compiled (uclibc problem)
 You need to change the following:
 
-Build options -> libraries -> static only
 Toolchain -> C library -> musl
+Build options -> libraries -> static only
+Build options -> gcc optimization level -> optimize for size
+Target packages  -> Filesystem and flash utilities  -> dynfilefs
 
 Then you need to remove BR2_STATIC_LIBS references in packages/libfuse/Config.in
 and update packages/libfuse/libfuse.mk to copy libfuse.* instead of libfuse.so* to target

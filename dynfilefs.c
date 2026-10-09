@@ -608,8 +608,8 @@ int main(int argc, char *argv[])
               fprintf(stderr, "Truncated index in %s\n", storage_file_path);
               return 1;
            }
-          written_data_size += written_data_size % DATA_BLOCK_SIZE; // align to full block
-          last_block_offsets[i] = header_size + offset_block_size + written_data_size;
+           written_data_size += (DATA_BLOCK_SIZE-written_data_size%DATA_BLOCK_SIZE)%DATA_BLOCK_SIZE;
+           last_block_offsets[i] = header_size+offset_block_size+written_data_size-DATA_BLOCK_SIZE;
        }
        else // file does not exist yet, attempt to create it
        {
@@ -628,9 +628,9 @@ int main(int argc, char *argv[])
              return 1;
           }
 
-          last_block_offsets[i] = header_size + offset_block_size;
+           last_block_offsets[i] = header_size+offset_block_size-DATA_BLOCK_SIZE;
            // Extend the complete index before allowing mmap access.
-           if (fseeko(files[i],last_block_offsets[i] - 1, SEEK_SET) || fwrite("\0",1,1,files[i]) != 1 || fflush(files[i]))
+           if (fseeko(files[i],header_size+offset_block_size-1, SEEK_SET) || fwrite("\0",1,1,files[i]) != 1 || fflush(files[i]))
            {
               perror(storage_file_path);
               return 1;

@@ -421,9 +421,6 @@ static int write_metadata(FILE *file)
 
 int main(int argc, char *argv[])
 {
-    int argument_index = 0;
-    char ** argvb = argv;
-    int argcb = argc;
     while (1)
     {
        int option_index = 0;
@@ -437,27 +434,8 @@ int main(int argc, char *argv[])
            {0,              0,                 0,  0 }
        };
 
-       int c = getopt_long(argcb, argvb, "f:o:m:s:p:d",long_options, &option_index);
-
-       if (c == -1){
-           if (optind < argcb) {
-               argument_index += 1;
-               switch(argument_index){
-                   case 1:
-                       storage_file = argvb[optind];
-                       break;
-                   case 2:
-                       mount_dir = argvb[optind];
-                       break;
-               }
-               argcb -= optind;
-               argvb += optind;
-               optind = 0;
-               continue;
-           } else {
-               break;
-           }
-       }
+       int c = getopt_long(argc, argv, "f:o:m:s:p:d",long_options, &option_index);
+       if (c == -1) break;
 
        switch (c)
        {
@@ -489,12 +467,16 @@ int main(int argc, char *argv[])
 
            case 'd':
                debug = 1;
-           default:
                break;
+            default:
+                usage(argv[0]);
+                return 1;
         }
     }
 
-    if (!strcmp(storage_file,"")) { usage(argv[0]); return 1; }
+    if (!*storage_file && optind < argc) storage_file=argv[optind++];
+    if (!*mount_dir && optind < argc) mount_dir=argv[optind++];
+    if (!*storage_file || !*mount_dir || optind < argc) { usage(argv[0]); return 1; }
 
     virtual_size = size_MB * 1024 * 1024;
     split_size = split_size_MB * 1024 * 1024;
@@ -650,15 +632,7 @@ int main(int argc, char *argv[])
     // is mounted using dynfilefs. Proper end of the process is umount, not kill.
     argv[0][0] = '@';
 
-    // we're fooling fuse here that we got only one parameter - mountdir
-    argv[1] = mount_dir;
-    argc=2;
-
-    if (debug) // or maybe two parameters, debug
-    {
-       argv[argc] = "-d";
-       argc++;
-    }
-
-    return fuse_main(argc, argv, &dynfilefs_oper, NULL);
+    // Pass only the mount directory and optional debug flag to FUSE.
+    char *fuse_argv[]={argv[0], mount_dir, debug ? "-d" : NULL, NULL};
+    return fuse_main(debug ? 3 : 2, fuse_argv, &dynfilefs_oper, NULL);
 }

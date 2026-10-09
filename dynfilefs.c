@@ -384,6 +384,25 @@ static void set_split_size_MB(const char *optarg)
     split_size_MB=parse_size_MB(optarg);
 }
 
+// Validate storage geometry before updating metadata or mapping an index.
+static int validate_storage_sizes(void)
+{
+    if (virtual_size <= 0 || split_size <= 0 || split_size%DATA_BLOCK_SIZE)
+    {
+        fprintf(stderr, "Invalid virtual or split size.\n");
+        return 0;
+    }
+    if ((virtual_size-1)/split_size >= MAX_SPLIT_FILES)
+    {
+        fprintf(stderr, "Storage requires more than %i split files.\n", MAX_SPLIT_FILES);
+        return 0;
+    }
+    max_files=(virtual_size-1)/split_size+1;
+    offset_block_size=split_size/DATA_BLOCK_SIZE*sizeof(off_t);
+    if (offset_block_size > SIZE_MAX-header_size) return 0;
+    return 1;
+}
+
 int main(int argc, char *argv[])
 {
     int ret=0;
@@ -486,9 +505,15 @@ int main(int argc, char *argv[])
           return 1;
        }
 
+       if (meta.virtual_size <= 0 || increase_size_MB > (LLONG_MAX-meta.virtual_size)/1024/1024)
+       {
+          fprintf(stderr, "Invalid stored size or requested size increase.\n");
+          return 1;
+       }
        split_size=meta.split_size;
        if (increase_size_MB > 0) virtual_size = meta.virtual_size + (increase_size_MB * 1024 * 1024);
        if (virtual_size<=meta.virtual_size) virtual_size=meta.virtual_size;
+       if (!validate_storage_sizes()) return 1;
 
        // if virtual size was changed, write it to main file
        if (meta.virtual_size!=virtual_size)
@@ -505,7 +530,7 @@ int main(int argc, char *argv[])
     }
     else // file does not exist yet, attempt to create it
     {
-       if (virtual_size <= 0) { printf("You must provide virtual file size for new storage file.\n"); return 1; }
+       if (!validate_storage_sizes()) return 1;
 
        mainfile = fopen(storage_file, "w+");
        if (mainfile == NULL)
@@ -533,11 +558,6 @@ int main(int argc, char *argv[])
     }
     fclose(mainfile);
     utime(storage_file,NULL);
-
-    if (virtual_size > split_size) max_files = virtual_size / split_size + ( virtual_size % split_size > 0 ? 1 : 0);
-    offset_block_size = split_size / DATA_BLOCK_SIZE * sizeof(off_t);
-
-    if (max_files > MAX_SPLIT_FILES) { printf("Your settings would result in %i storage files, which is bigger than maximum of %i. Quit\n", max_files, MAX_SPLIT_FILES); return 1; }
 
     char storage_file_path[4096];
 
@@ -587,7 +607,11 @@ int main(int argc, char *argv[])
           // calculate new last_block_offsets after index of offsets
           fseeko(files[i], 0, SEEK_END);
           off_t written_data_size = ftello(files[i]) - header_size - offset_block_size;
-          if (written_data_size < 0) written_data_size = 0;
+           if (written_data_size < 0)
+           {
+              fprintf(stderr, "Truncated index in %s\n", storage_file_path);
+              return 1;
+           }
           written_data_size += written_data_size % DATA_BLOCK_SIZE; // align to full block
           last_block_offsets[i] = header_size + offset_block_size + written_data_size;
        }
@@ -626,6 +650,11 @@ int main(int argc, char *argv[])
        }
 
        indexes[i] = mmap(NULL, header_size + offset_block_size, PROT_READ|PROT_WRITE, MAP_SHARED, fileno(files[i]), 0);
+       if (indexes[i] == MAP_FAILED)
+       {
+          perror("Cannot map storage index");
+          return 1;
+       }
     }
 
     // The following line ensures that the process is not killed by systemd

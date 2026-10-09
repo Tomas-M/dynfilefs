@@ -74,8 +74,15 @@ static int with_unlock(int err)
 
 static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
-   for (int ix = 0; ix < max_files; ix++) fflush(files[ix]);
-   return 0;
+   pthread_mutex_lock(&dynfilefs_mutex);
+   for (int ix = 0; ix < max_files; ix++)
+   {
+      // Persist both data and the shared index before reporting success.
+      if (fflush(files[ix])) return with_unlock(-errno);
+      if (msync(indexes[ix], header_size+offset_block_size, MS_SYNC)) return with_unlock(-errno);
+      if (fsync(fileno(files[ix]))) return with_unlock(-errno);
+   }
+   return with_unlock(0);
 }
 
 static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
@@ -550,7 +557,7 @@ int main(int argc, char *argv[])
           return 1;
        }
     }
-    if (fclose(mainfile)) { perror(storage_file); return 1; }
+    if (fsync(fileno(mainfile)) || fclose(mainfile)) { perror(storage_file); return 1; }
     utime(storage_file,NULL);
 
     char storage_file_path[4096];

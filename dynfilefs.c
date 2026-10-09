@@ -158,6 +158,10 @@ static off_t create_data_offset(off_t offset)
 
 static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
+    if (offset < 0) return -EINVAL;
+    if (offset >= virtual_size) return 0;
+    if (size > virtual_size-offset) size=virtual_size-offset;
+
     off_t tot = 0;
     off_t data_offset;
     off_t len = 0;
@@ -193,7 +197,8 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
 
 static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    if (offset + size > virtual_size) return -ENOSPC; // do not allow to write beyond file size
+    if (offset < 0) return -EINVAL;
+    if (offset > virtual_size || size > virtual_size-offset) return -ENOSPC;
 
     off_t tot = 0;
     off_t data_offset;

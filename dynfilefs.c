@@ -403,9 +403,17 @@ static int validate_storage_sizes(void)
     return 1;
 }
 
+// Flush metadata while errors can still be reported to the caller.
+static int write_metadata(FILE *file)
+{
+    struct metaStruct meta={format_version, split_size, virtual_size};
+    if (fseeko(file, meta_header_offset, SEEK_SET)) return 0;
+    if (fwrite(&meta, sizeof(meta), 1, file) != 1) return 0;
+    return fflush(file)==0;
+}
+
 int main(int argc, char *argv[])
 {
-    int ret=0;
     int argument_index = 0;
     char ** argvb = argv;
     int argcb = argc;
@@ -484,6 +492,7 @@ int main(int argc, char *argv[])
     virtual_size = size_MB * 1024 * 1024;
     split_size = split_size_MB * 1024 * 1024;
     if (split_size <= 0) split_size = virtual_size;
+    memcpy(header, banner, strlen(banner));
 
     // open main file when it exists
     mainfile = fopen(storage_file, "r+");
@@ -492,9 +501,7 @@ int main(int argc, char *argv[])
        struct metaStruct meta = {};
 
        // check version and other parameters
-       fseeko(mainfile, meta_header_offset, SEEK_SET);
-       ret = fread(&meta,sizeof(meta),1,mainfile);
-       if (ret < 0)
+       if (fseeko(mainfile, meta_header_offset, SEEK_SET) || fread(&meta,sizeof(meta),1,mainfile) != 1)
        {
           printf("cannot read header metadata from file %s\n", storage_file);
           return 1;
@@ -518,10 +525,7 @@ int main(int argc, char *argv[])
        // if virtual size was changed, write it to main file
        if (meta.virtual_size!=virtual_size)
        {
-          meta.virtual_size=virtual_size;
-          fseeko(mainfile, meta_header_offset, SEEK_SET);
-          ret = fwrite(&meta,sizeof(meta),1,mainfile);
-          if (ret < 0)
+          if (!write_metadata(mainfile))
           {
              printf("cannot update header metadata for new virtual size in file %s\n", storage_file);
              return 1;
@@ -530,6 +534,7 @@ int main(int argc, char *argv[])
     }
     else // file does not exist yet, attempt to create it
     {
+       if (errno != ENOENT) { perror(storage_file); return 1; }
        if (!validate_storage_sizes()) return 1;
 
        mainfile = fopen(storage_file, "w+");
@@ -539,24 +544,13 @@ int main(int argc, char *argv[])
           return 1;
        }
 
-       // write full header (empty)
-       fwrite(header,sizeof(header),1,mainfile);
-
-       // write banner to header
-       fseeko(mainfile, 0, SEEK_SET);
-       fwrite(banner,strlen(banner),1,mainfile);
-
-       // write version to header
-       struct metaStruct meta = {version: format_version, split_size: split_size, virtual_size: virtual_size};
-       fseeko(mainfile, meta_header_offset, SEEK_SET);
-       ret = fwrite(&meta,sizeof(meta),1,mainfile);
-       if (ret < 0)
+       if (fwrite(header,sizeof(header),1,mainfile) != 1 || !write_metadata(mainfile))
        {
           printf("cannot write to %s\n", storage_file);
           return 1;
        }
     }
-    fclose(mainfile);
+    if (fclose(mainfile)) { perror(storage_file); return 1; }
     utime(storage_file,NULL);
 
     char storage_file_path[4096];
@@ -573,9 +567,7 @@ int main(int argc, char *argv[])
           struct metaStruct meta = {};
 
           // check version and other parameters
-          fseeko(files[i], meta_header_offset, SEEK_SET);
-          ret = fread(&meta,sizeof(meta),1,files[i]);
-          if (ret < 0)
+           if (fseeko(files[i], meta_header_offset, SEEK_SET) || fread(&meta,sizeof(meta),1,files[i]) != 1)
           {
              printf("cannot read header metadata from file %s\n", storage_file_path);
              return 1;
@@ -594,10 +586,7 @@ int main(int argc, char *argv[])
 
           if (meta.virtual_size!=virtual_size)
           {
-             meta.virtual_size=virtual_size;
-             fseeko(files[i], meta_header_offset, SEEK_SET);
-             ret = fwrite(&meta,sizeof(meta),1,files[i]);
-             if (ret < 0)
+              if (!write_metadata(files[i]))
              {
                 printf("cannot update header metadata for new virtual size in file %s\n", storage_file_path);
                 return 1;
@@ -605,7 +594,7 @@ int main(int argc, char *argv[])
           }
 
           // calculate new last_block_offsets after index of offsets
-          fseeko(files[i], 0, SEEK_END);
+           if (fseeko(files[i], 0, SEEK_END)) { perror(storage_file_path); return 1; }
           off_t written_data_size = ftello(files[i]) - header_size - offset_block_size;
            if (written_data_size < 0)
            {
@@ -617,7 +606,7 @@ int main(int argc, char *argv[])
        }
        else // file does not exist yet, attempt to create it
        {
-          if (virtual_size <= 0) { printf("You must provide virtual file size for new storage file.\n"); return 1; }
+           if (errno != ENOENT) { perror(storage_file_path); return 1; }
 
           files[i] = fopen(storage_file_path, "w+");
           if (files[i] == NULL)
@@ -626,27 +615,19 @@ int main(int argc, char *argv[])
              return 1;
           }
 
-          // write full header (empty)
-          fwrite(header,sizeof(header),1,files[i]);
-
-          // write banner to header
-          fseeko(files[i], 0, SEEK_SET);
-          fwrite(banner,strlen(banner),1,files[i]);
-
-          // write version to header
-          struct metaStruct meta = {version: format_version, split_size: split_size, virtual_size: virtual_size};
-          fseeko(files[i], meta_header_offset, SEEK_SET);
-          ret = fwrite(&meta,sizeof(meta),1,files[i]);
-          if (ret < 0)
+           if (fwrite(header,sizeof(header),1,files[i]) != 1 || !write_metadata(files[i]))
           {
              printf("cannot write to %s\n", storage_file_path);
              return 1;
           }
 
           last_block_offsets[i] = header_size + offset_block_size;
-          fseeko(files[i],last_block_offsets[i] - 1, SEEK_SET);
-          fwrite("\0",1,1,files[i]);
-          fflush(files[i]);
+           // Extend the complete index before allowing mmap access.
+           if (fseeko(files[i],last_block_offsets[i] - 1, SEEK_SET) || fwrite("\0",1,1,files[i]) != 1 || fflush(files[i]))
+           {
+              perror(storage_file_path);
+              return 1;
+           }
        }
 
        indexes[i] = mmap(NULL, header_size + offset_block_size, PROT_READ|PROT_WRITE, MAP_SHARED, fileno(files[i]), 0);

@@ -236,14 +236,14 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        }
        else // write block
        {
-           if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
+          if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
           len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
-           if (len <= 0) return with_unlock(len < 0 ? -errno : -EIO);
-           // Publish the index only after the first write succeeds.
-           if (new_block) create_data_offset(offset);
+          if (len <= 0) return with_unlock(len < 0 ? -errno : -EIO);
+          // Publish the index only after the first write succeeds.
+          if (new_block) create_data_offset(offset);
        }
 
-        pthread_mutex_unlock(&dynfilefs_mutex);
+       pthread_mutex_unlock(&dynfilefs_mutex);
 
        tot += len;
        buf += len;
@@ -446,17 +446,17 @@ int main(int argc, char *argv[])
            case 'm':
                mount_dir = optarg;
                break;
-            case 'o':
-            {
-                // Parse each mount option without skipping its first value character.
-                char *next;
-                for (char *option=strtok_r(optarg, ",", &next); option; option=strtok_r(NULL, ",", &next))
-                {
-                    if (!strncmp(option, "size=", 5)) set_size_MB(option+5);
-                    else if (!strncmp(option, "split=", 6)) set_split_size_MB(option+6);
-                }
+           case 'o':
+           {
+               // Parse each mount option without skipping its first value character.
+               char *next;
+               for (char *option=strtok_r(optarg, ",", &next); option; option=strtok_r(NULL, ",", &next))
+               {
+                   if (!strncmp(option, "size=", 5)) set_size_MB(option+5);
+                   else if (!strncmp(option, "split=", 6)) set_split_size_MB(option+6);
+               }
                break;
-            }
+           }
            case 's':
                set_size_MB(optarg);
                break;
@@ -468,9 +468,9 @@ int main(int argc, char *argv[])
            case 'd':
                debug = 1;
                break;
-            default:
-                usage(argv[0]);
-                return 1;
+           default:
+               usage(argv[0]);
+               return 1;
         }
     }
 
@@ -546,8 +546,11 @@ int main(int argc, char *argv[])
 
     for (int i=0; i<max_files; i++)
     {
-       memset(storage_file_path,0,sizeof(storage_file_path));
-       sprintf(storage_file_path, "%s.%i", storage_file, i);
+       if (snprintf(storage_file_path, sizeof(storage_file_path), "%s.%i", storage_file, i) >= sizeof(storage_file_path))
+       {
+          fprintf(stderr, "Storage file path is too long.\n");
+          return 1;
+       }
 
        // open existing changes file
        files[i] = fopen(storage_file_path, "r+");
@@ -556,7 +559,7 @@ int main(int argc, char *argv[])
           struct metaStruct meta = {};
 
           // check version and other parameters
-           if (fseeko(files[i], meta_header_offset, SEEK_SET) || fread(&meta,sizeof(meta),1,files[i]) != 1)
+          if (fseeko(files[i], meta_header_offset, SEEK_SET) || fread(&meta,sizeof(meta),1,files[i]) != 1)
           {
              printf("cannot read header metadata from file %s\n", storage_file_path);
              return 1;
@@ -575,7 +578,7 @@ int main(int argc, char *argv[])
 
           if (meta.virtual_size!=virtual_size)
           {
-              if (!write_metadata(files[i]))
+             if (!write_metadata(files[i]))
              {
                 printf("cannot update header metadata for new virtual size in file %s\n", storage_file_path);
                 return 1;
@@ -583,19 +586,19 @@ int main(int argc, char *argv[])
           }
 
           // calculate new last_block_offsets after index of offsets
-           if (fseeko(files[i], 0, SEEK_END)) { perror(storage_file_path); return 1; }
+          if (fseeko(files[i], 0, SEEK_END)) { perror(storage_file_path); return 1; }
           off_t written_data_size = ftello(files[i]) - header_size - offset_block_size;
-           if (written_data_size < 0)
-           {
-              fprintf(stderr, "Truncated index in %s\n", storage_file_path);
-              return 1;
-           }
-           written_data_size += (DATA_BLOCK_SIZE-written_data_size%DATA_BLOCK_SIZE)%DATA_BLOCK_SIZE;
-           last_block_offsets[i] = header_size+offset_block_size+written_data_size-DATA_BLOCK_SIZE;
+          if (written_data_size < 0)
+          {
+             fprintf(stderr, "Truncated index in %s\n", storage_file_path);
+             return 1;
+          }
+          written_data_size += (DATA_BLOCK_SIZE-written_data_size%DATA_BLOCK_SIZE)%DATA_BLOCK_SIZE;
+          last_block_offsets[i] = header_size+offset_block_size+written_data_size-DATA_BLOCK_SIZE;
        }
        else // file does not exist yet, attempt to create it
        {
-           if (errno != ENOENT) { perror(storage_file_path); return 1; }
+          if (errno != ENOENT) { perror(storage_file_path); return 1; }
 
           files[i] = fopen(storage_file_path, "w+");
           if (files[i] == NULL)
@@ -604,19 +607,19 @@ int main(int argc, char *argv[])
              return 1;
           }
 
-           if (fwrite(header,sizeof(header),1,files[i]) != 1 || !write_metadata(files[i]))
+          if (fwrite(header,sizeof(header),1,files[i]) != 1 || !write_metadata(files[i]))
           {
              printf("cannot write to %s\n", storage_file_path);
              return 1;
           }
 
-           last_block_offsets[i] = header_size+offset_block_size-DATA_BLOCK_SIZE;
-           // Extend the complete index before allowing mmap access.
-           if (fseeko(files[i],header_size+offset_block_size-1, SEEK_SET) || fwrite("\0",1,1,files[i]) != 1 || fflush(files[i]))
-           {
-              perror(storage_file_path);
-              return 1;
-           }
+          last_block_offsets[i] = header_size+offset_block_size-DATA_BLOCK_SIZE;
+          // Extend the complete index before allowing mmap access.
+          if (fseeko(files[i],header_size+offset_block_size-1, SEEK_SET) || fwrite("\0",1,1,files[i]) != 1 || fflush(files[i]))
+          {
+             perror(storage_file_path);
+             return 1;
+          }
        }
 
        indexes[i] = mmap(NULL, header_size + offset_block_size, PROT_READ|PROT_WRITE, MAP_SHARED, fileno(files[i]), 0);

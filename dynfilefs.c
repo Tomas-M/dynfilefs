@@ -59,7 +59,7 @@ struct metaStruct
 int debug=0;
 int meta_header_offset = DATA_BLOCK_SIZE / 2;
 
-pthread_mutex_t dynfilefs_mutex;
+pthread_mutex_t dynfilefs_mutex=PTHREAD_MUTEX_INITIALIZER;
 FILE * mainfile;
 FILE * files[MAX_SPLIT_FILES] = {0};
 char * indexes[MAX_SPLIT_FILES] = {0};
@@ -177,7 +177,9 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
         if (tot + rd > size) rd = size - tot;
         len = rd;
 
+        pthread_mutex_lock(&dynfilefs_mutex);
         data_offset = get_data_offset(offset);
+        pthread_mutex_unlock(&dynfilefs_mutex);
         if (data_offset != 0)
         {
            len = pread(fileno(files[ix]), buf, rd, data_offset + (offset % DATA_BLOCK_SIZE));
@@ -218,6 +220,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        pthread_mutex_lock(&dynfilefs_mutex);
 
        data_offset = get_data_offset(offset);
+       int new_block=data_offset==0;
 
        // skip writing empty blocks if not already exist
        if (!memcmp(&empty, buf, wr) && data_offset == 0)
@@ -226,17 +229,14 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        }
        else // write block
        {
-          if (data_offset == 0) data_offset = create_data_offset(offset);
-          if (data_offset == 0) return with_unlock(-ENOSPC); // write error, not enough free space
-       }
-
-       pthread_mutex_unlock(&dynfilefs_mutex);
-
-       if (len == 0)
-       {
+           if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
           len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
-          if (len <= 0) return -errno;
+           if (len <= 0) return with_unlock(len < 0 ? -errno : -EIO);
+           // Publish the index only after the first write succeeds.
+           if (new_block) create_data_offset(offset);
        }
+
+        pthread_mutex_unlock(&dynfilefs_mutex);
 
        tot += len;
        buf += len;

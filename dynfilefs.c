@@ -24,6 +24,7 @@
 #include <pthread.h>
 #include <getopt.h>
 #include <wait.h>
+#include <limits.h>
 
 #define MAX_SPLIT_FILES 9999
 #define DATA_BLOCK_SIZE 4096
@@ -355,18 +356,32 @@ static void usage(char * cmd)
        printf("\n");
 }
 
-static void set_size_MB(const char * optarg){
-    if (optarg[0] == '+') {
-        optarg++;
-        increase_size_MB = abs(strtol(optarg, NULL, 10));
-        size_MB = increase_size_MB;
-    } else {
-        size_MB = abs(strtol(optarg, NULL, 10));
+// Reject invalid sizes and values that overflow when converted to bytes.
+static off_t parse_size_MB(const char *value)
+{
+    char *end;
+    errno=0;
+    long long size=strtoll(value, &end, 10);
+    int invalid=errno || end==value || *end;
+    if (invalid || size < 0 || size > LLONG_MAX/1024/1024)
+    {
+        fprintf(stderr, "Invalid size in MB: %s\n", value);
+        exit(1);
     }
+    return size;
 }
 
-static void set_split_size_MB(const char * optarg){
-    split_size_MB = abs(strtol(optarg, NULL, 10));
+// The last size option determines whether to grow by a delta or use an absolute size.
+static void set_size_MB(const char *optarg)
+{
+    size_MB=parse_size_MB(optarg);
+    increase_size_MB=optarg[0]=='+' ? size_MB : 0;
+}
+
+// Split sizes use the same numeric limits as virtual sizes.
+static void set_split_size_MB(const char *optarg)
+{
+    split_size_MB=parse_size_MB(optarg);
 }
 
 int main(int argc, char *argv[])

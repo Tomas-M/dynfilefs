@@ -62,9 +62,17 @@ How to compile:
 
 How to compile statically:
 
-    DynFileFS can be statically compiled with buildroot, but it's a bit tricky.
-    Read buildroot/README for more information. Tested on buildroot-2025.02.4
-    Pre-built static binary for newest version can be found in ./static/ directory.
+    sh static/build.sh
+
+The script builds a fully static 32-bit x86 (i686) binary at `static/dynfilefs`
+on an x86 or x86-64 Linux host that can run 32-bit executables. It downloads a
+standalone compiler, builds musl and libfuse with verified SHA-256 checksums,
+and packs the result with UPX. No Buildroot, root access or host multilib is needed.
+Required tools: make, curl, tar, gzip, xz and standard shell utilities.
+
+Use `JOBS=2 sh static/build.sh` to limit parallel builds, or `PACK=0 sh static/build.sh`
+to skip compression. Archives placed in `static/sources/` are reused after checksum
+verification. The previous binary is replaced only after all checks pass.
 
 
 

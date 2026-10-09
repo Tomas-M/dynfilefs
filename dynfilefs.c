@@ -364,16 +364,6 @@ static void set_split_size_MB(const char * optarg){
     split_size_MB = abs(strtol(optarg, NULL, 10));
 }
 
-static void set_option(const char * optarg, int keyind, int valueind){
-    const char * keyarg = optarg + keyind;
-    const char * valuearg = optarg + valueind;
-    if (strncmp(keyarg, "size=", 5)){
-        set_size_MB(valuearg);
-    } else if (strncmp(keyarg, "split=", 6)){
-        set_split_size_MB(valuearg);
-    }
-}
-
 int main(int argc, char *argv[])
 {
     int ret=0;
@@ -424,31 +414,17 @@ int main(int argc, char *argv[])
            case 'm':
                mount_dir = optarg;
                break;
-           case 'o': {
-               int ind = 0;
-               char ch = optarg[ind];
-               int keyind = ind;
-               int valueind = ind;
-               while (ch != 0){
-                   if (keyind == valueind){
-                       if (ch == '='){
-                           valueind = ind + 1;
-                       }
-                   } else {
-                       if (ch == ','){
-                           set_option(optarg, keyind, valueind);
-                           keyind = ind + 1;
-                           valueind = keyind;
-                       }
-                   }
-                   ch = optarg[ind];
-                   ind ++;
-               }
-               if (keyind != valueind){
-                   set_option(optarg, keyind, valueind);
-               }
+            case 'o':
+            {
+                // Parse each mount option without skipping its first value character.
+                char *next;
+                for (char *option=strtok_r(optarg, ",", &next); option; option=strtok_r(NULL, ",", &next))
+                {
+                    if (!strncmp(option, "size=", 5)) set_size_MB(option+5);
+                    else if (!strncmp(option, "split=", 6)) set_split_size_MB(option+6);
+                }
                break;
-           };
+            }
            case 's':
                set_size_MB(optarg);
                break;

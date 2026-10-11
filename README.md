@@ -80,5 +80,8 @@ verification. The previous binary is replaced only after all checks pass.
 
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
-Latest version is 4.03 (2023)
+Latest version is 5.00 (2026).
+Version 5.00 uses storage format `500` and refuses storage files from earlier versions.
+To migrate data, mount old and new storage with their respective versions and copy the data between them.
+Changing the version number in an old storage header is not sufficient.
 Releases can be found here: https://github.com/Tomas-M/dynfilefs/releases

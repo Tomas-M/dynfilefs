@@ -32,7 +32,7 @@
 char *dynfilefs_path = "/virtual.dat";
 char *storage_file = "";
 char *mount_dir = "";
-char *banner = "DynfilefsFS 4.00 (c) 2023 Tomas M <www.slax.org>";
+char *banner = "DynfilefsFS 5.00 (c) 2026 Tomas M <www.slax.org>";
 char header[DATA_BLOCK_SIZE] = {};
 char empty[DATA_BLOCK_SIZE] = {};
 
@@ -40,7 +40,7 @@ off_t size_MB = 0;
 off_t split_size_MB = 0;
 off_t increase_size_MB = 0;
 
-off_t format_version=400;
+off_t format_version=500;
 off_t virtual_size = 0;
 off_t split_size = 0;
 off_t header_size = DATA_BLOCK_SIZE;

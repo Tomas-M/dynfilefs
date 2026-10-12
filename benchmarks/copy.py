@@ -83,9 +83,12 @@ def measure(binary, parent, large, small, workers):
             synchronize(inner)
             small_seconds=time.monotonic()-started
         with mounted(binary, root, False) as inner:
+            started=time.monotonic()
+            subprocess.run(['dd', 'if='+str(inner/'large'), 'of=/dev/null', 'bs=1M', 'iflag=direct', 'status=none'], check=True)
+            read_seconds=time.monotonic()-started
             assert digest(inner/'large')==expected_large
             assert {path.name:digest(path) for path in (inner/'small').iterdir()}==expected_small
-    result={'large_seconds':large_seconds, 'large_mib_s':1024/large_seconds, 'small_seconds':small_seconds, 'small_files_s':1000/small_seconds}
+    result={'large_seconds':large_seconds, 'large_mib_s':1024/large_seconds, 'small_seconds':small_seconds, 'small_files_s':1000/small_seconds, 'read_seconds':read_seconds, 'read_mib_s':1024/read_seconds}
     print('XFS copy: '+json.dumps(result)+'; SHA-256 after remount PASS', flush=True)
     return result
 
@@ -98,14 +101,21 @@ if __name__=='__main__':
     parser.add_argument('--source-directory', required=True)
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--compare', action='append', default=[], help='Additional binary to compare using the same inputs and alternating run order')
     args=parser.parse_args()
     binary=str(Path(args.binary).resolve())
+    binaries=[binary]+[str(Path(path).resolve()) for path in args.compare]
     parent=Path(args.directory)
     source=Path(args.source_directory)
     parent.mkdir(parents=True, exist_ok=True)
     source.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='dynfilefs-copy-source-', dir=source) as folder:
         large, small=prepare(Path(folder))
-        samples=[measure(binary, parent, large, small, args.workers) for _ in range(args.repeats)]
-    result={'filesystem':'XFS on loop over dynfilefs', 'backing_filesystem':subprocess.check_output(['findmnt', '-n', '-o', 'FSTYPE', '-T', str(parent)], text=True).strip(), 'large_bytes':1024**3, 'small_files':1000, 'small_bytes':16384, 'workers':args.workers, 'samples':samples, 'median':{key:statistics.median(sample[key] for sample in samples) for key in samples[0]}}
+        variants={path:[] for path in binaries}
+        for repeat in range(args.repeats):
+            for path in binaries if repeat%2==0 else reversed(binaries):
+                print('Binary: '+Path(path).name, flush=True)
+                variants[path].append(measure(path, parent, large, small, args.workers))
+    result={'filesystem':'XFS on loop over dynfilefs', 'backing_filesystem':subprocess.check_output(['findmnt', '-n', '-o', 'FSTYPE', '-T', str(parent)], text=True).strip(), 'large_bytes':1024**3, 'small_files':1000, 'small_bytes':16384, 'workers':args.workers}
+    result['variants']={Path(path).name:{'samples':samples, 'median':{key:statistics.median(sample[key] for sample in samples) for key in samples[0]}} for path, samples in variants.items()}
     Path(args.output).write_text(json.dumps(result, indent=2)+'\n')

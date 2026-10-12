@@ -64,6 +64,7 @@ FILE * mainfile;
 FILE * files[MAX_SPLIT_FILES] = {0};
 char * indexes[MAX_SPLIT_FILES] = {0};
 off_t last_block_offsets[MAX_SPLIT_FILES] = {0};
+int storage_dirty[MAX_SPLIT_FILES] = {0};
 
 
 // Release the split's lock while preserving an I/O error.
@@ -78,10 +79,12 @@ static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_in
    for (int ix = 0; ix < max_files; ix++)
    {
       pthread_mutex_lock(&storage_locks[ix]);
-      // Persist both data and the shared index before reporting success.
-      if (fflush(files[ix])) return with_unlock(ix, -errno);
-      if (msync(indexes[ix], header_size+offset_block_size, MS_SYNC)) return with_unlock(ix, -errno);
-      if (fsync(fileno(files[ix]))) return with_unlock(ix, -errno);
+      if (storage_dirty[ix])
+      {
+         // Linux fsync persists both file data and its MAP_SHARED index pages.
+         if (fsync(fileno(files[ix]))) return with_unlock(ix, -errno);
+         storage_dirty[ix]=0;
+      }
       pthread_mutex_unlock(&storage_locks[ix]);
    }
    return 0;
@@ -89,7 +92,6 @@ static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_in
 
 static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
 {
-   for (int ix = 0; ix < max_files; ix++) fflush(files[ix]);
    return 0;
 }
 
@@ -276,6 +278,7 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        else // write block
        {
           if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
+          storage_dirty[ix]=1;
           len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
           if (len <= 0) return with_unlock(ix, len < 0 ? -errno : -EIO);
           // Publish only blocks touched by a successful (possibly short) write.
@@ -296,9 +299,10 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
 
 static void dynfilefs_destroy(void *fi)
 {
+   int error=dynfilefs_fsync(dynfilefs_path, 0, NULL);
+   if (error) fprintf(stderr, "Cannot synchronize storage on unmount: %s\n", strerror(-error));
    for (int ix = 0; ix < max_files; ix++)
    {
-      fflush(files[ix]);
       fclose(files[ix]);
       pthread_mutex_destroy(&storage_locks[ix]);
    }
@@ -306,13 +310,11 @@ static void dynfilefs_destroy(void *fi)
 
 static int dynfilefs_release(const char *path, struct fuse_file_info *fi)
 {
-   for (int ix = 0; ix < max_files; ix++) fflush(files[ix]);
    return 0;
 }
 
 static int dynfilefs_truncate(const char *path, off_t size)
 {
-   for (int ix = 0; ix < max_files; ix++) fflush(files[ix]);
    return 0;
 }
 
@@ -590,6 +592,7 @@ int main(int argc, char *argv[])
     for (int i=0; i<max_files; i++)
     {
        pthread_mutex_init(&storage_locks[i], NULL);
+       storage_dirty[i]=1;
        if (snprintf(storage_file_path, sizeof(storage_file_path), "%s.%i", storage_file, i) >= sizeof(storage_file_path))
        {
           fprintf(stderr, "Storage file path is too long.\n");

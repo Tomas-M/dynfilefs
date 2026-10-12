@@ -125,6 +125,8 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
     fail_sync=0;
     sync_calls=0;
     assert(ops->fsync(dynfilefs_path, 0, NULL)==0 && sync_calls);
+    sync_calls=0;
+    assert(ops->fsync(dynfilefs_path, 0, NULL)==0 && !sync_calls);
 
     pthread_barrier_init(&barrier, NULL, 9);
     for (int i=0; i < 8; i++)

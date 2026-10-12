@@ -32,11 +32,11 @@ def digest(path):
 
 # Create or reopen XFS inside disposable dynfilefs storage.
 @contextlib.contextmanager
-def mounted(binary, root, create):
+def mounted(binary, root, create, split=256, size=3072):
     mount, inner=root/'mount', root/'xfs'
     mount.mkdir(exist_ok=True)
     inner.mkdir(exist_ok=True)
-    subprocess.run([binary, '-f', str(root/'storage'), '-m', str(mount), '-s', '3072', '-p', '256'], check=True)
+    subprocess.run([binary, '-f', str(root/'storage'), '-m', str(mount), '-s', str(size), '-p', str(split)], check=True)
     try:
         if create:
             subprocess.run(['mkfs.xfs', '-q', '-f', str(mount/'virtual.dat')], check=True)
@@ -63,12 +63,12 @@ def prepare(root):
 
 
 # Include XFS durability in copy timings, then verify persistence after remounting.
-def measure(binary, parent, large, small, workers):
+def measure(binary, parent, large, small, workers, split=256, size=3072, remount=None):
     expected_large=digest(large)
     expected_small={path.name:digest(path) for path in small}
     with tempfile.TemporaryDirectory(prefix='dynfilefs-copy-', dir=parent) as folder:
         root=Path(folder)
-        with mounted(binary, root, True) as inner:
+        with mounted(binary, root, True, split, size) as inner:
             synchronize(inner)
             started=time.monotonic()
             subprocess.run(['cp', '--reflink=never', str(large), str(inner/'large')], check=True)
@@ -82,13 +82,18 @@ def measure(binary, parent, large, small, workers):
                 list(pool.map(lambda path: shutil.copyfile(path, target/path.name), small))
             synchronize(inner)
             small_seconds=time.monotonic()-started
-        with mounted(binary, root, False) as inner:
+            parts=[path.stat() for path in root.glob('storage.*')]
+            allocated_bytes=sum(part.st_blocks*512 for part in parts)
+            storage_bytes=sum(part.st_size for part in parts)
+        if remount:
+            remount()
+        with mounted(binary, root, False, split, size) as inner:
             started=time.monotonic()
             subprocess.run(['dd', 'if='+str(inner/'large'), 'of=/dev/null', 'bs=1M', 'iflag=direct', 'status=none'], check=True)
             read_seconds=time.monotonic()-started
             assert digest(inner/'large')==expected_large
             assert {path.name:digest(path) for path in (inner/'small').iterdir()}==expected_small
-    result={'large_seconds':large_seconds, 'large_mib_s':1024/large_seconds, 'small_seconds':small_seconds, 'small_files_s':1000/small_seconds, 'read_seconds':read_seconds, 'read_mib_s':1024/read_seconds}
+    result={'large_seconds':large_seconds, 'large_mib_s':1024/large_seconds, 'small_seconds':small_seconds, 'small_files_s':1000/small_seconds, 'read_seconds':read_seconds, 'read_mib_s':1024/read_seconds, 'allocated_bytes':allocated_bytes, 'storage_bytes':storage_bytes}
     print('XFS copy: '+json.dumps(result)+'; SHA-256 after remount PASS', flush=True)
     return result
 

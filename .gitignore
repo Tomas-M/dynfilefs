@@ -16,3 +16,4 @@ depcomp
 install-sh
 missing
 static/.build.*/
+__pycache__/

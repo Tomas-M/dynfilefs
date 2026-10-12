@@ -22,13 +22,55 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
 ssize_t write_budget=-1;
 int fail_sync=0;
 int sync_calls=0;
+int stop_writes=0;
+int concurrent_writes=0;
+int active_writes=0;
+int overlapping_writes=0;
+
+struct writer_args
+{
+    const struct fuse_operations *ops;
+    pthread_barrier_t *barrier;
+    int worker;
+    off_t offset;
+};
+
+// Race partial writes to one new block without the kernel's FUSE page lock.
+static void *write_partial_block(void *data)
+{
+    struct writer_args *args=data;
+    char bytes[512];
+    memset(bytes, args->worker+1, sizeof(bytes));
+    pthread_barrier_wait(args->barrier);
+    assert(args->ops->write(dynfilefs_path, bytes, sizeof(bytes), args->offset+args->worker*512, NULL)==sizeof(bytes));
+    return NULL;
+}
+
+// Keep writers busy until fsync has proved it can obtain its barrier.
+static void *overwrite_until_sync(void *data)
+{
+    struct writer_args *args=data;
+    char bytes[512];
+    memset(bytes, args->worker+1, sizeof(bytes));
+    pthread_barrier_wait(args->barrier);
+    while (!__atomic_load_n(&stop_writes, __ATOMIC_RELAXED))
+        assert(args->ops->write(dynfilefs_path, bytes, sizeof(bytes), 65536+args->worker*512, NULL)==sizeof(bytes));
+    return NULL;
+}
 
 // Inject short writes and ENOSPC without replacing the production allocation code.
 ssize_t test_pwrite(int fd, const void *buf, size_t size, off_t offset)
 {
     if (!write_budget) { errno=ENOSPC; return -1; }
     if (write_budget > 0 && size > write_budget) size=write_budget;
+    if (concurrent_writes)
+    {
+        if (__atomic_add_fetch(&active_writes, 1, __ATOMIC_RELAXED)>1)
+            __atomic_store_n(&overlapping_writes, 1, __ATOMIC_RELAXED);
+        usleep(10000);
+    }
     ssize_t result=pwrite(fd, buf, size, offset);
+    if (concurrent_writes) __atomic_sub_fetch(&active_writes, 1, __ATOMIC_RELAXED);
     if (write_budget > 0 && result > 0) write_budget-=result;
     return result;
 }
@@ -64,11 +106,48 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
     assert(ops->read(dynfilefs_path, output, 1, virtual_size, NULL)==0);
     assert(ops->read(dynfilefs_path, output, 1, -1, NULL)==-EINVAL);
 
+    pthread_t threads[8];
+    struct writer_args args[8];
+    pthread_barrier_t barrier;
+    pthread_barrier_init(&barrier, NULL, 8);
+    for (int i=0; i < 8; i++)
+    {
+        args[i]=(struct writer_args){ops, &barrier, i, 65536};
+        assert(!pthread_create(&threads[i], NULL, write_partial_block, &args[i]));
+    }
+    for (int i=0; i < 8; i++) pthread_join(threads[i], NULL);
+    pthread_barrier_destroy(&barrier);
+    assert(ops->read(dynfilefs_path, output, DATA_BLOCK_SIZE, 65536, NULL)==DATA_BLOCK_SIZE);
+    for (int i=0; i < DATA_BLOCK_SIZE; i++) assert(output[i]==i/512+1);
+
     fail_sync=1;
     assert(ops->fsync(dynfilefs_path, 0, NULL)==-EIO);
     fail_sync=0;
     sync_calls=0;
     assert(ops->fsync(dynfilefs_path, 0, NULL)==0 && sync_calls);
+
+    pthread_barrier_init(&barrier, NULL, 9);
+    for (int i=0; i < 8; i++)
+        assert(!pthread_create(&threads[i], NULL, overwrite_until_sync, &args[i]));
+    pthread_barrier_wait(&barrier);
+    usleep(10000);
+    alarm(5);
+    assert(ops->fsync(dynfilefs_path, 0, NULL)==0);
+    alarm(0);
+    __atomic_store_n(&stop_writes, 1, __ATOMIC_RELAXED);
+    for (int i=0; i < 8; i++) pthread_join(threads[i], NULL);
+    pthread_barrier_destroy(&barrier);
+
+    // Distinct split files must actually execute their backing writes concurrently.
+    pthread_barrier_init(&barrier, NULL, 2);
+    concurrent_writes=1;
+    args[0].offset=131072;
+    args[1].offset=split_size-512;
+    for (int i=0; i < 2; i++) assert(!pthread_create(&threads[i], NULL, write_partial_block, &args[i]));
+    for (int i=0; i < 2; i++) pthread_join(threads[i], NULL);
+    concurrent_writes=0;
+    assert(overlapping_writes);
+    pthread_barrier_destroy(&barrier);
 
     if (ops->read_buf)
     {
@@ -83,7 +162,7 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
         free(source);
     }
     ops->destroy(NULL);
-    puts("PASS: ENOSPC, short-write publication, bounds, fsync error/retry, buffer reads");
+    puts("PASS: ENOSPC, short-write publication, partial-write races, bounds, fsync error/retry/progress, buffer reads");
     return 0;
 }
 

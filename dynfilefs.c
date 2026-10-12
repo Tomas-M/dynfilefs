@@ -59,30 +59,32 @@ struct metaStruct
 int debug=0;
 int meta_header_offset = DATA_BLOCK_SIZE / 2;
 
-pthread_mutex_t dynfilefs_mutex=PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t storage_locks[MAX_SPLIT_FILES];
 FILE * mainfile;
 FILE * files[MAX_SPLIT_FILES] = {0};
 char * indexes[MAX_SPLIT_FILES] = {0};
 off_t last_block_offsets[MAX_SPLIT_FILES] = {0};
 
 
-static int with_unlock(int err)
+// Release the split's lock while preserving an I/O error.
+static int with_unlock(int ix, int err)
 {
-   pthread_mutex_unlock(&dynfilefs_mutex);
+   pthread_mutex_unlock(&storage_locks[ix]);
    return err;
 }
 
 static int dynfilefs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
-   pthread_mutex_lock(&dynfilefs_mutex);
    for (int ix = 0; ix < max_files; ix++)
    {
+      pthread_mutex_lock(&storage_locks[ix]);
       // Persist both data and the shared index before reporting success.
-      if (fflush(files[ix])) return with_unlock(-errno);
-      if (msync(indexes[ix], header_size+offset_block_size, MS_SYNC)) return with_unlock(-errno);
-      if (fsync(fileno(files[ix]))) return with_unlock(-errno);
+      if (fflush(files[ix])) return with_unlock(ix, -errno);
+      if (msync(indexes[ix], header_size+offset_block_size, MS_SYNC)) return with_unlock(ix, -errno);
+      if (fsync(fileno(files[ix]))) return with_unlock(ix, -errno);
+      pthread_mutex_unlock(&storage_locks[ix]);
    }
-   return with_unlock(0);
+   return 0;
 }
 
 static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
@@ -210,10 +212,10 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
     {
         ix = offset / split_size;
 
-        pthread_mutex_lock(&dynfilefs_mutex);
+        pthread_mutex_lock(&storage_locks[ix]);
         data_offset = get_data_offset(offset);
         rd=get_data_size(offset, size-tot, data_offset);
-        pthread_mutex_unlock(&dynfilefs_mutex);
+        pthread_mutex_unlock(&storage_locks[ix]);
         len=rd;
         if (data_offset != 0)
         {
@@ -248,8 +250,8 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     {
        ix = offset / split_size;
 
-       pthread_mutex_lock(&dynfilefs_mutex);
-
+       // Independent split files can perform I/O concurrently.
+       pthread_mutex_lock(&storage_locks[ix]);
        data_offset = get_data_offset(offset);
        int new_block=data_offset==0;
        wr=get_data_size(offset, size-tot, data_offset);
@@ -275,14 +277,14 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
        {
           if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
           len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
-          if (len <= 0) return with_unlock(len < 0 ? -errno : -EIO);
+          if (len <= 0) return with_unlock(ix, len < 0 ? -errno : -EIO);
           // Publish only blocks touched by a successful (possibly short) write.
           if (new_block)
               for (off_t block=0; block < (offset%DATA_BLOCK_SIZE+len+DATA_BLOCK_SIZE-1)/DATA_BLOCK_SIZE; block++)
                   create_data_offset(offset+block*DATA_BLOCK_SIZE);
        }
 
-       pthread_mutex_unlock(&dynfilefs_mutex);
+       pthread_mutex_unlock(&storage_locks[ix]);
 
        tot += len;
        buf += len;
@@ -298,6 +300,7 @@ static void dynfilefs_destroy(void *fi)
    {
       fflush(files[ix]);
       fclose(files[ix]);
+      pthread_mutex_destroy(&storage_locks[ix]);
    }
 }
 
@@ -586,6 +589,7 @@ int main(int argc, char *argv[])
 
     for (int i=0; i<max_files; i++)
     {
+       pthread_mutex_init(&storage_locks[i], NULL);
        if (snprintf(storage_file_path, sizeof(storage_file_path), "%s.%i", storage_file, i) >= sizeof(storage_file_path))
        {
           fprintf(stderr, "Storage file path is too long.\n");

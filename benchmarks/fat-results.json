@@ -1,0 +1,1312 @@
+{
+  "date": "2026-10-12",
+  "environment": {
+    "virtualization": "VirtualBox",
+    "os": "Debian GNU/Linux 13 (trixie)",
+    "kernel": "7.2.9-slax",
+    "cpus": 16,
+    "memory_kib": 24618244,
+    "cpu_model": "AMD Ryzen 7 5700",
+    "compiler": "14.2.0",
+    "musl": "1.2.6",
+    "libfuse": "2.9.9",
+    "upx": "5.2.1",
+    "architecture": "static ELF32 i686",
+    "dosfstools": "4.2"
+  },
+  "baseline_commit": "906e2cc234d280de0166859cb76c88dea728925b",
+  "source_code_commit": "9991a3e",
+  "prototype": "preallocation.patch",
+  "prototype_sha256": "db0e3a7f78992482572ee2c184d40b8a26ab4025fb23f1bcac39efd80a7d0c8a",
+  "binary_sha256": {
+    "none": "fbf47a8ffa14bc202127ec3e885146071ff845a5108b2432a1d92717acb97a62",
+    "reserve16": "3bc208c2da132166f2575afe839bf0797b274f44b5acff9b25f1d37ad2f54099",
+    "reserve64": "fc0e5aa2813cbf578e8b57b6e6ba7a5837498e6e0aca2565b89253cc55290b80"
+  },
+  "build": {
+    "cflags": "-m32 -march=i686 -fno-pie -Os -g0 -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -std=gnu99 -D_FILE_OFFSET_BITS=64 -D_REENTRANT",
+    "ldflags": "-m32 -static -no-pie -Wl,-m,elf_i386 -Wl,--gc-sections -Wl,--build-id=none -pthread -lrt -ldl",
+    "variants": {
+      "none": "unpatched source",
+      "reserve16": "-DPREALLOCATE_SIZE=16777216",
+      "reserve64": "-DPREALLOCATE_SIZE=67108864"
+    },
+    "packing": "strip --strip-all; upx --best --lzma"
+  },
+  "method": {
+    "copy_includes_syncfs": true,
+    "content_hashes_after_remount": [
+      "XFS",
+      "dynfilefs",
+      "FAT32"
+    ],
+    "image_uses_fresh_regular_file": true,
+    "binary_order": "forward, reversed, forward",
+    "source_filesystem": "tmpfs",
+    "read_backing_cache": "warm",
+    "runtime_allocation_measured": "before unmount, after small copy and syncfs; recorded only in ram_control",
+    "fsck_checks": 108
+  },
+  "decision": "Keep production preallocation disabled: no consistent throughput benefit; retain the tested prototype only as a benchmark patch. Split 4088 MiB had the lowest disk-backed copy median, but disk variance and RAM control do not establish a universal performance advantage.",
+  "validation": {
+    "callback_tests": {
+      "32bit_reserve16": "PASS",
+      "32bit_reserve64": "PASS",
+      "64bit_asan_ubsan": "PASS",
+      "errors_injected": [
+        "EOPNOTSUPP",
+        "ENOSYS",
+        "EINVAL",
+        "ENOSPC",
+        "EDQUOT",
+        "EFBIG",
+        "EIO"
+      ],
+      "unsupported_retries": "disabled once per split",
+      "capacity_errors": "ordinary smaller write still allowed",
+      "io_error": "returned before publishing index",
+      "4088_mib_reservation_cap_bytes": 4294955008
+    },
+    "fat32": {
+      "integration": {
+        "image_mib": 1024,
+        "cluster_bytes": 4096,
+        "fsck": [
+          "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/261627 clusters\n",
+          "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/261627 clusters\n"
+        ]
+      },
+      "pressure": {
+        "image_mib": 128,
+        "cluster_bytes": 512,
+        "fsck": [
+          "fsck.fat 4.2 (2021-01-31)\nimage.fat: 20 files, 256158/258078 clusters\n",
+          "fsck.fat 4.2 (2021-01-31)\nimage.fat: 20 files, 256158/258078 clusters\n"
+        ]
+      }
+    },
+    "pressure_trace": "fallocate(3, FALLOC_FL_KEEP_SIZE, 69632, 33554432) = -1 ENOSPC (No space left on device)",
+    "content_checks": "All 54 XFS repetitions passed content SHA-256 after remount; all FAT checks passed.",
+    "documented_system_compiler_reproduction": "PASS: patch application, both callback variants, FAT32 integration with bidirectional format compatibility, and real ENOSPC pressure test"
+  },
+  "matrices": {
+    "vm_disk": {
+      "kernel": "7.2.9-slax",
+      "filesystem": "XFS / dynfilefs / FAT32 / loop image / VM ext4",
+      "image_mib": 8192,
+      "virtual_mib": 8192,
+      "cluster_bytes": 32768,
+      "large_bytes": 1073741824,
+      "small_files": 1000,
+      "small_bytes": 16384,
+      "workers": 8,
+      "repeats": 3,
+      "variants": {
+        "none-256": {
+          "binary": "none",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 11.404743974002486,
+              "large_mib_s": 89.78719753238161,
+              "small_seconds": 0.710673688998213,
+              "small_files_s": 1407.1155517374366,
+              "read_seconds": 1.3033535510039655,
+              "read_mib_s": 785.6655618970148,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33900/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 39.89099332099431,
+              "large_mib_s": 25.669954913383343,
+              "small_seconds": 1.2115971660023206,
+              "small_files_s": 825.3568331622234,
+              "read_seconds": 1.3189927120038192,
+              "read_mib_s": 776.3500060924029,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 21.02686401599931,
+              "large_mib_s": 48.69960633315743,
+              "small_seconds": 0.863006765001046,
+              "small_files_s": 1158.7394682807474,
+              "read_seconds": 1.3326785000026575,
+              "read_mib_s": 768.3773693339826,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33902/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 21.02686401599931,
+            "large_mib_s": 48.69960633315743,
+            "small_seconds": 0.863006765001046,
+            "small_files_s": 1158.7394682807474,
+            "read_seconds": 1.3189927120038192,
+            "read_mib_s": 776.3500060924029
+          }
+        },
+        "reserve16-256": {
+          "binary": "reserve16",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 8.282180412003072,
+              "large_mib_s": 123.63893915133181,
+              "small_seconds": 1.6748758000030648,
+              "small_files_s": 597.0591968659229,
+              "read_seconds": 1.3356799329994828,
+              "read_mib_s": 766.6507332340049,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33902/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 33.68519068000023,
+              "large_mib_s": 30.39911543703908,
+              "small_seconds": 1.2768962049958645,
+              "small_files_s": 783.1490109278215,
+              "read_seconds": 1.3190829539962579,
+              "read_mib_s": 776.2968939123332,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 29.954987220000476,
+              "large_mib_s": 34.18462483323282,
+              "small_seconds": 2.2002155800000764,
+              "small_files_s": 454.5009175873417,
+              "read_seconds": 1.3371407340018777,
+              "read_mib_s": 765.8131817847694,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33900/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 29.954987220000476,
+            "large_mib_s": 34.18462483323282,
+            "small_seconds": 1.6748758000030648,
+            "small_files_s": 597.0591968659229,
+            "read_seconds": 1.3356799329994828,
+            "read_mib_s": 766.6507332340049
+          }
+        },
+        "reserve64-256": {
+          "binary": "reserve64",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 10.289156706996437,
+              "large_mib_s": 99.52224746501324,
+              "small_seconds": 1.393708974996116,
+              "small_files_s": 717.5099091277551,
+              "read_seconds": 1.363493839999137,
+              "read_mib_s": 751.0118270872775,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 40.48846979800146,
+              "large_mib_s": 25.291150915526707,
+              "small_seconds": 1.985706373998255,
+              "small_files_s": 503.59912880094265,
+              "read_seconds": 1.3100993229963933,
+              "read_mib_s": 781.6201275930429,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 21.106262277004134,
+              "large_mib_s": 48.516406484518896,
+              "small_seconds": 0.7452519260041299,
+              "small_files_s": 1341.8281323495141,
+              "read_seconds": 1.5096333059991593,
+              "read_mib_s": 678.3104187823014,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33900/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 21.106262277004134,
+            "large_mib_s": 48.516406484518896,
+            "small_seconds": 1.393708974996116,
+            "small_files_s": 717.5099091277551,
+            "read_seconds": 1.363493839999137,
+            "read_mib_s": 751.0118270872775
+          }
+        },
+        "none-1024": {
+          "binary": "none",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 7.4417624740017345,
+              "large_mib_s": 137.60181187956596,
+              "small_seconds": 1.4573315159941558,
+              "small_files_s": 686.1856681373041,
+              "read_seconds": 1.3323944119983935,
+              "read_mib_s": 768.5411997969522,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 12.635791931003041,
+              "large_mib_s": 81.0396376888357,
+              "small_seconds": 0.5722840890011867,
+              "small_files_s": 1747.3838941517845,
+              "read_seconds": 1.3342252319998806,
+              "read_mib_s": 767.4866097871035,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 35.77687416400295,
+              "large_mib_s": 28.621840893811285,
+              "small_seconds": 2.0663499219954247,
+              "small_files_s": 483.9451388922182,
+              "read_seconds": 1.444192966002447,
+              "read_mib_s": 709.0465222486514,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 12.635791931003041,
+            "large_mib_s": 81.0396376888357,
+            "small_seconds": 1.4573315159941558,
+            "small_files_s": 686.1856681373041,
+            "read_seconds": 1.3342252319998806,
+            "read_mib_s": 767.4866097871035
+          }
+        },
+        "reserve16-1024": {
+          "binary": "reserve16",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 8.550808510000934,
+              "large_mib_s": 119.75475755331681,
+              "small_seconds": 1.1192863269970985,
+              "small_files_s": 893.4264413672162,
+              "read_seconds": 1.420742059002805,
+              "read_mib_s": 720.7501133025712,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 19.944066916999873,
+              "large_mib_s": 51.34359026479025,
+              "small_seconds": 0.918972463994578,
+              "small_files_s": 1088.1718867322886,
+              "read_seconds": 1.302288111000962,
+              "read_mib_s": 786.3083378784247,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33876/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 37.43790161400102,
+              "large_mib_s": 27.351960335753557,
+              "small_seconds": 1.7270492330062552,
+              "small_files_s": 579.0222889357423,
+              "read_seconds": 1.4232750400042278,
+              "read_mib_s": 719.4674052577766,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 19.944066916999873,
+            "large_mib_s": 51.34359026479025,
+            "small_seconds": 1.1192863269970985,
+            "small_files_s": 893.4264413672162,
+            "read_seconds": 1.420742059002805,
+            "read_mib_s": 720.7501133025712
+          }
+        },
+        "reserve64-1024": {
+          "binary": "reserve64",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 8.428257996994944,
+              "large_mib_s": 121.49604347245925,
+              "small_seconds": 1.3852992499960237,
+              "small_files_s": 721.8656907544491,
+              "read_seconds": 1.3327818600009778,
+              "read_mib_s": 768.3177800748645,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 19.043907197999943,
+              "large_mib_s": 53.770478366306264,
+              "small_seconds": 1.397704977003741,
+              "small_files_s": 715.4585670458863,
+              "read_seconds": 1.3356113310001092,
+              "read_mib_s": 766.6901112865119,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 21.86250686999847,
+              "large_mib_s": 46.8381785350159,
+              "small_seconds": 0.9614070649986388,
+              "small_files_s": 1040.1421379209605,
+              "read_seconds": 1.3336645539966412,
+              "read_mib_s": 767.8092642796436,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33876/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 19.043907197999943,
+            "large_mib_s": 53.770478366306264,
+            "small_seconds": 1.3852992499960237,
+            "small_files_s": 721.8656907544491,
+            "read_seconds": 1.3336645539966412,
+            "read_mib_s": 767.8092642796436
+          }
+        },
+        "none-4088": {
+          "binary": "none",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 8.862059776998649,
+              "large_mib_s": 115.54875793749186,
+              "small_seconds": 0.8688776170019992,
+              "small_files_s": 1150.9100711449207,
+              "read_seconds": 1.3806093940002029,
+              "read_mib_s": 741.7014576679387,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 8.642245629998797,
+              "large_mib_s": 118.4877222704144,
+              "small_seconds": 0.4688764890015591,
+              "small_files_s": 2132.757823130421,
+              "read_seconds": 1.3049157409986947,
+              "read_mib_s": 784.7249962792995,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 23.102227416995447,
+              "large_mib_s": 44.324730317851575,
+              "small_seconds": 0.6907497910069651,
+              "small_files_s": 1447.702211450856,
+              "read_seconds": 1.2936348030052613,
+              "read_mib_s": 791.5680666762606,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 8.862059776998649,
+            "large_mib_s": 115.54875793749186,
+            "small_seconds": 0.6907497910069651,
+            "small_files_s": 1447.702211450856,
+            "read_seconds": 1.3049157409986947,
+            "read_mib_s": 784.7249962792995
+          }
+        },
+        "reserve16-4088": {
+          "binary": "reserve16",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 9.213892642001156,
+              "large_mib_s": 111.1365239195579,
+              "small_seconds": 0.7049639199976809,
+              "small_files_s": 1418.5123119539078,
+              "read_seconds": 1.2759559569967678,
+              "read_mib_s": 802.5355376765516,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 9.132919752999442,
+              "large_mib_s": 112.12186548159443,
+              "small_seconds": 0.6852172510043602,
+              "small_files_s": 1459.3911617581805,
+              "read_seconds": 1.2689126320037758,
+              "read_mib_s": 806.9901537531175,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 32.82797239300271,
+              "large_mib_s": 31.192910355263546,
+              "small_seconds": 2.2189403449956444,
+              "small_files_s": 450.6655630717116,
+              "read_seconds": 1.3012844599943492,
+              "read_mib_s": 786.9147995546236,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 9.213892642001156,
+            "large_mib_s": 111.1365239195579,
+            "small_seconds": 0.7049639199976809,
+            "small_files_s": 1418.5123119539078,
+            "read_seconds": 1.2759559569967678,
+            "read_mib_s": 802.5355376765516
+          }
+        },
+        "reserve64-4088": {
+          "binary": "reserve64",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 9.488981654998497,
+              "large_mib_s": 107.91463586196197,
+              "small_seconds": 0.6180509309997433,
+              "small_files_s": 1617.9896345798327,
+              "read_seconds": 1.2998136120004347,
+              "read_mib_s": 787.8052595741377,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 9.217293061003147,
+              "large_mib_s": 111.09552373162309,
+              "small_seconds": 0.3748621389968321,
+              "small_files_s": 2667.647372114181,
+              "read_seconds": 1.2772811019967776,
+              "read_mib_s": 801.7029285089849,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 24.14971433900064,
+              "large_mib_s": 42.40215787340759,
+              "small_seconds": 1.1884775549988262,
+              "small_files_s": 841.4126087564082,
+              "read_seconds": 1.320468649995746,
+              "read_mib_s": 775.4822501869309,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 9.488981654998497,
+            "large_mib_s": 107.91463586196197,
+            "small_seconds": 0.6180509309997433,
+            "small_files_s": 1617.9896345798327,
+            "read_seconds": 1.2998136120004347,
+            "read_mib_s": 787.8052595741377
+          }
+        }
+      },
+      "image_backing_filesystem": "ext4"
+    },
+    "ram_control": {
+      "kernel": "7.2.9-slax",
+      "filesystem": "XFS / dynfilefs / FAT32 / loop image",
+      "image_backing_filesystem": "tmpfs",
+      "image_mib": 8192,
+      "virtual_mib": 8192,
+      "cluster_bytes": 32768,
+      "large_bytes": 1073741824,
+      "small_files": 1000,
+      "small_bytes": 16384,
+      "workers": 8,
+      "repeats": 3,
+      "variants": {
+        "none-256": {
+          "binary": "none",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 3.273380639999232,
+              "large_mib_s": 312.8264362192355,
+              "small_seconds": 0.25495031000173185,
+              "small_files_s": 3922.332943988996,
+              "read_seconds": 1.300184576997708,
+              "read_mib_s": 787.5804851989143,
+              "allocated_bytes": 1110114304,
+              "storage_bytes": 1109282816,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33900/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.411964191996958,
+              "large_mib_s": 300.1203829752598,
+              "small_seconds": 0.2828731650006375,
+              "small_files_s": 3535.1532903368416,
+              "read_seconds": 1.389585294004064,
+              "read_mib_s": 736.9105044637909,
+              "allocated_bytes": 1110114304,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.360747241000354,
+              "large_mib_s": 304.6941428702023,
+              "small_seconds": 0.2775004760042066,
+              "small_files_s": 3603.5974222431287,
+              "read_seconds": 1.4420856979995733,
+              "read_mib_s": 710.0826264489469,
+              "allocated_bytes": 1110114304,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.360747241000354,
+            "large_mib_s": 304.6941428702023,
+            "small_seconds": 0.2775004760042066,
+            "small_files_s": 3603.5974222431287,
+            "read_seconds": 1.389585294004064,
+            "read_mib_s": 736.9105044637909,
+            "allocated_bytes": 1110114304,
+            "storage_bytes": 1109279744
+          }
+        },
+        "reserve16-256": {
+          "binary": "reserve16",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 3.3684953970005154,
+              "large_mib_s": 303.99329056878724,
+              "small_seconds": 0.28760932000295725,
+              "small_files_s": 3476.9387862316767,
+              "read_seconds": 1.413976501004072,
+              "read_mib_s": 724.1987397052585,
+              "allocated_bytes": 1173225472,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.466432198001712,
+              "large_mib_s": 295.40459513106975,
+              "small_seconds": 0.27853721900464734,
+              "small_files_s": 3590.1844772253407,
+              "read_seconds": 1.3738660470044124,
+              "read_mib_s": 745.3419510823032,
+              "allocated_bytes": 1173225472,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.6292697320022853,
+              "large_mib_s": 282.15042573731614,
+              "small_seconds": 0.3054673439983162,
+              "small_files_s": 3273.672356955813,
+              "read_seconds": 1.4803500179987168,
+              "read_mib_s": 691.7282990845262,
+              "allocated_bytes": 1173225472,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.466432198001712,
+            "large_mib_s": 295.40459513106975,
+            "small_seconds": 0.28760932000295725,
+            "small_files_s": 3476.9387862316767,
+            "read_seconds": 1.413976501004072,
+            "read_mib_s": 724.1987397052585,
+            "allocated_bytes": 1173225472,
+            "storage_bytes": 1109279744
+          }
+        },
+        "reserve64-256": {
+          "binary": "reserve64",
+          "split_mib": 256,
+          "samples": [
+            {
+              "large_seconds": 3.4658249799977057,
+              "large_mib_s": 295.4563504821521,
+              "small_seconds": 0.28842732300108764,
+              "small_files_s": 3467.07790924589,
+              "read_seconds": 1.444858123002632,
+              "read_mib_s": 708.7201045539158,
+              "allocated_bytes": 1357774848,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.3644697310010088,
+              "large_mib_s": 304.3570255855255,
+              "small_seconds": 0.2618131339986576,
+              "small_files_s": 3819.5180842422037,
+              "read_seconds": 1.411604394997994,
+              "read_mib_s": 725.4157068570584,
+              "allocated_bytes": 1357774848,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.57049761700182,
+              "large_mib_s": 286.79475799786763,
+              "small_seconds": 0.2873115670008701,
+              "small_files_s": 3480.5420834204406,
+              "read_seconds": 1.4002323879976757,
+              "read_mib_s": 731.3071807061356,
+              "allocated_bytes": 1357774848,
+              "storage_bytes": 1109279744,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 36 files, 33901/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.4658249799977057,
+            "large_mib_s": 295.4563504821521,
+            "small_seconds": 0.2873115670008701,
+            "small_files_s": 3480.5420834204406,
+            "read_seconds": 1.411604394997994,
+            "read_mib_s": 725.4157068570584,
+            "allocated_bytes": 1357774848,
+            "storage_bytes": 1109279744
+          }
+        },
+        "none-1024": {
+          "binary": "none",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 3.993299317000492,
+              "large_mib_s": 256.42956330385033,
+              "small_seconds": 0.26742231599928346,
+              "small_files_s": 3739.40370781427,
+              "read_seconds": 1.5089649349974934,
+              "read_mib_s": 678.6108651369696,
+              "allocated_bytes": 1109327872,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.3998697989954962,
+              "large_mib_s": 301.18800440609357,
+              "small_seconds": 0.283866552003019,
+              "small_files_s": 3522.782071166189,
+              "read_seconds": 1.3915102729952196,
+              "read_mib_s": 735.8910817063855,
+              "allocated_bytes": 1109327872,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.3177649719946203,
+              "large_mib_s": 308.6415127785189,
+              "small_seconds": 0.2806526700005634,
+              "small_files_s": 3563.1230588256744,
+              "read_seconds": 1.3200214819953544,
+              "read_mib_s": 775.7449510989123,
+              "allocated_bytes": 1109327872,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.3998697989954962,
+            "large_mib_s": 301.18800440609357,
+            "small_seconds": 0.2806526700005634,
+            "small_files_s": 3563.1230588256744,
+            "read_seconds": 1.3915102729952196,
+            "read_mib_s": 735.8910817063855,
+            "allocated_bytes": 1109327872,
+            "storage_bytes": 1109181440
+          }
+        },
+        "reserve16-1024": {
+          "binary": "reserve16",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 3.4693272320000688,
+              "large_mib_s": 295.15809017809585,
+              "small_seconds": 0.2712663210040773,
+              "small_files_s": 3686.4141346354945,
+              "read_seconds": 1.408944276998227,
+              "read_mib_s": 726.7853077778523,
+              "allocated_bytes": 1166147584,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.4456475080005475,
+              "large_mib_s": 297.1865223074459,
+              "small_seconds": 0.2767855909987702,
+              "small_files_s": 3612.904835080245,
+              "read_seconds": 1.6161199299967848,
+              "read_mib_s": 633.6163430656023,
+              "allocated_bytes": 1149370368,
+              "storage_bytes": 1109184512,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.4111463720037136,
+              "large_mib_s": 300.1923366303688,
+              "small_seconds": 0.2805278259984334,
+              "small_files_s": 3564.7087644189155,
+              "read_seconds": 1.378178591003234,
+              "read_mib_s": 743.0096554138078,
+              "allocated_bytes": 1166147584,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.4456475080005475,
+            "large_mib_s": 297.1865223074459,
+            "small_seconds": 0.2767855909987702,
+            "small_files_s": 3612.904835080245,
+            "read_seconds": 1.408944276998227,
+            "read_mib_s": 726.7853077778523,
+            "allocated_bytes": 1166147584,
+            "storage_bytes": 1109181440
+          }
+        },
+        "reserve64-1024": {
+          "binary": "reserve64",
+          "split_mib": 1024,
+          "samples": [
+            {
+              "large_seconds": 3.3532453820007504,
+              "large_mib_s": 305.37580264675387,
+              "small_seconds": 0.27354412799468264,
+              "small_files_s": 3655.7172962580967,
+              "read_seconds": 1.3264766479987884,
+              "read_mib_s": 771.9698658433792,
+              "allocated_bytes": 1350696960,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.40081539300445,
+              "large_mib_s": 301.10425932157034,
+              "small_seconds": 0.2833595510019222,
+              "small_files_s": 3529.0852080479767,
+              "read_seconds": 1.4275625449954532,
+              "read_mib_s": 717.3065751758438,
+              "allocated_bytes": 1350696960,
+              "storage_bytes": 1109181440,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33877/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.3255178420004086,
+              "large_mib_s": 307.92196844267426,
+              "small_seconds": 0.27220688499801327,
+              "small_files_s": 3673.6763657072765,
+              "read_seconds": 1.3256254809966777,
+              "read_mib_s": 772.4655377249544,
+              "allocated_bytes": 1350696960,
+              "storage_bytes": 1109184512,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 12 files, 33878/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.3532453820007504,
+            "large_mib_s": 305.37580264675387,
+            "small_seconds": 0.27354412799468264,
+            "small_files_s": 3655.7172962580967,
+            "read_seconds": 1.3264766479987884,
+            "read_mib_s": 771.9698658433792,
+            "allocated_bytes": 1350696960,
+            "storage_bytes": 1109181440
+          }
+        },
+        "none-4088": {
+          "binary": "none",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 3.3147276309973677,
+              "large_mib_s": 308.9243262173818,
+              "small_seconds": 0.2716539079992799,
+              "small_files_s": 3681.1544783764007,
+              "read_seconds": 1.3305055490054656,
+              "read_mib_s": 769.6322655440451,
+              "allocated_bytes": 1117552640,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.535174600998289,
+              "large_mib_s": 289.66037482585307,
+              "small_seconds": 0.2948701420027646,
+              "small_files_s": 3391.3233574887495,
+              "read_seconds": 1.5302938579989132,
+              "read_mib_s": 669.1525256064429,
+              "allocated_bytes": 1117552640,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.3952526330031105,
+              "large_mib_s": 301.59758659675026,
+              "small_seconds": 0.2757471780059859,
+              "small_files_s": 3626.5103680527677,
+              "read_seconds": 1.4171706199995242,
+              "read_mib_s": 722.566489559559,
+              "allocated_bytes": 1117552640,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.3952526330031105,
+            "large_mib_s": 301.59758659675026,
+            "small_seconds": 0.2757471780059859,
+            "small_files_s": 3626.5103680527677,
+            "read_seconds": 1.4171706199995242,
+            "read_mib_s": 722.566489559559,
+            "allocated_bytes": 1117552640,
+            "storage_bytes": 1117500416
+          }
+        },
+        "reserve16-4088": {
+          "binary": "reserve16",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 3.470138358003169,
+              "large_mib_s": 295.0890985768196,
+              "small_seconds": 0.2759419079957297,
+              "small_files_s": 3623.951168792655,
+              "read_seconds": 1.4365068140032236,
+              "read_mib_s": 712.8403360276035,
+              "allocated_bytes": 1132462080,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.6886435039996286,
+              "large_mib_s": 277.60882798504866,
+              "small_seconds": 0.299005203996785,
+              "small_files_s": 3344.4233967605205,
+              "read_seconds": 1.446345153002767,
+              "read_mib_s": 707.991448565418,
+              "allocated_bytes": 1132462080,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.4353376290018787,
+              "large_mib_s": 298.0784163265834,
+              "small_seconds": 0.2713774990043021,
+              "small_files_s": 3684.9038835903903,
+              "read_seconds": 1.3506712059970596,
+              "read_mib_s": 758.1415783896034,
+              "allocated_bytes": 1132462080,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.470138358003169,
+            "large_mib_s": 295.0890985768196,
+            "small_seconds": 0.2759419079957297,
+            "small_files_s": 3623.951168792655,
+            "read_seconds": 1.4365068140032236,
+            "read_mib_s": 712.8403360276035,
+            "allocated_bytes": 1132462080,
+            "storage_bytes": 1117500416
+          }
+        },
+        "reserve64-4088": {
+          "binary": "reserve64",
+          "split_mib": 4088,
+          "samples": [
+            {
+              "large_seconds": 3.3771404060025816,
+              "large_mib_s": 303.2151100913443,
+              "small_seconds": 0.27337386299768696,
+              "small_files_s": 3657.9941806962765,
+              "read_seconds": 1.402809409002657,
+              "read_mib_s": 729.9637380733169,
+              "allocated_bytes": 1216348160,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.2868593700040947,
+              "large_mib_s": 311.543599749059,
+              "small_seconds": 0.27384464699571254,
+              "small_files_s": 3651.7054869276176,
+              "read_seconds": 1.354998770999373,
+              "read_mib_s": 755.7202426425476,
+              "allocated_bytes": 1216348160,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            },
+            {
+              "large_seconds": 3.2858116529969266,
+              "large_mib_s": 311.64293883553216,
+              "small_seconds": 0.27169366200541845,
+              "small_files_s": 3680.615854704983,
+              "read_seconds": 1.446386158997484,
+              "read_mib_s": 707.9713765442506,
+              "allocated_bytes": 1216348160,
+              "storage_bytes": 1117500416,
+              "fat": {
+                "image_mib": 8192,
+                "cluster_bytes": 32768,
+                "fsck": [
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 7 files, 34127/262078 clusters\n",
+                  "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+                ]
+              }
+            }
+          ],
+          "median": {
+            "large_seconds": 3.2868593700040947,
+            "large_mib_s": 311.543599749059,
+            "small_seconds": 0.27337386299768696,
+            "small_files_s": 3657.9941806962765,
+            "read_seconds": 1.402809409002657,
+            "read_mib_s": 729.9637380733169,
+            "allocated_bytes": 1216348160,
+            "storage_bytes": 1117500416
+          }
+        }
+      }
+    }
+  }
+}

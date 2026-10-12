@@ -110,3 +110,102 @@ Format 400 is still rejected, and rebuilding the static binary was byte-identica
 
 [results.json](results.json) retains the environment, binary hashes, commit IDs,
 all microbenchmark samples, paired XFS samples, exploratory single runs and traces.
+
+## FAT32 preallocation and split sizes, 2026-10-12
+
+The FAT32 trial compares the current optimized binary with experimental 16 MiB
+and 64 MiB growth reservations, using splits of 256, 1024 and 4088 MiB. Each case
+runs three times, with the case order reversed for the second repetition. Every
+run creates a fresh regular 8 GiB FAT32 image with 32 KiB clusters, then formats
+an 8 GiB virtual.dat as XFS. It copies one nonzero 1 GiB file and 1000 files of
+16 KiB with eight workers, including XFS syncfs in both copy timings.
+
+The first 27 runs placed the FAT image on the VM's ext4 disk. Another 27 placed
+the image on tmpfs to separate FAT/FUSE costs from VM disk delays. Both matrices
+used the same static 32-bit toolchain as the earlier measurements. Here the
+baseline is the optimized source at `9991a3e`, rather than the original release.
+Read timings use direct reads from XFS with warm backing-file cache. XFS,
+dynfilefs and FAT32 are all unmounted and remounted before content verification;
+fsck.fat checks the image while the storage files are still present.
+
+Disk-backed medians:
+
+| Split | Reservation | 1 GiB copy + syncfs | 1000 files + syncfs | Read |
+| --- | --- | ---: | ---: | ---: |
+| 256 MiB | None | 21.03 s | 0.863 s | 776 MiB/s |
+| 256 MiB | 16 MiB | 29.96 s | 1.675 s | 767 MiB/s |
+| 256 MiB | 64 MiB | 21.11 s | 1.394 s | 751 MiB/s |
+| 1024 MiB | None | 12.64 s | 1.457 s | 767 MiB/s |
+| 1024 MiB | 16 MiB | 19.94 s | 1.119 s | 721 MiB/s |
+| 1024 MiB | 64 MiB | 19.04 s | 1.385 s | 768 MiB/s |
+| 4088 MiB | None | 8.86 s | 0.691 s | 785 MiB/s |
+| 4088 MiB | 16 MiB | 9.21 s | 0.705 s | 803 MiB/s |
+| 4088 MiB | 64 MiB | 9.49 s | 0.618 s | 788 MiB/s |
+
+The 4088 MiB split had the lowest large-copy median, but individual disk-backed
+copies varied from 7.44 to 40.49 seconds across the matrix. These results do not
+establish a universal split-size advantage or physical USB performance. On the
+RAM control, median large-copy times were 3.36, 3.40 and 3.40 seconds without
+reservations for the three split sizes. Reservations changed these medians by
+approximately -3% to +3%; small-copy and read results also showed no consistent
+benefit across split sizes and backing filesystems.
+
+Runtime allocation was recorded in the RAM control before unmounting. With
+256 MiB splits, allocated space above the storage parts' file lengths was about
+0.8 MiB without reservations, 61 MiB with 16 MiB reservations and 237 MiB with
+64 MiB reservations. KEEP_SIZE does not increase the visible file length, but
+does reserve disk space while the files are open.
+
+Production preallocation remains disabled. The tested implementation and its
+callback fault tests are retained in [preallocation.patch](preallocation.patch)
+for further experiments. It reserves only newly appended nonzero blocks and
+caps the reservation at the part's data capacity plus its header and index.
+For a 4088 MiB part the cap is 4 GiB minus 12 KiB, below FAT32's file-size limit.
+The format stays 500, and compatibility with the unpatched binary passed in
+both directions.
+
+Unsupported fallocate errors (`EOPNOTSUPP`, `ENOSYS`, `EINVAL`) disable reservations
+for that part and allow ordinary writes. Capacity errors (`ENOSPC`, `EDQUOT`,
+`EFBIG`) also allow the ordinary write to try; actual I/O errors such as `EIO`
+are returned before publishing the new block's index entry. Fault tests passed
+for both 32-bit reservation sizes and under 64-bit ASan/UBSan. On a real mounted
+128 MiB FAT32 image with approximately 1 MiB free, strace confirmed reservation
+`ENOSPC` followed by a successful 64 KiB write. That data passed fsck and content
+verification after remounting FAT32 and dynfilefs.
+
+[fat-results.json](fat-results.json) retains all 54 samples, medians, FAT checks,
+runtime allocation counts, binary hashes, compiler flags and validation evidence.
+Allocation counts were added after the disk matrix and are present only in the
+RAM control. All 54 repetitions passed content verification and FAT checks.
+
+To build functional prototypes separately from the repository's production
+sources, install libfuse 2 development files, pkg-config and patch, then run from
+the repository root. These commands use the system compiler and libraries;
+the recorded measurements used the static i686 build described above.
+
+```sh
+repo=$PWD
+work=$(mktemp -d)
+mkdir -p "$work/tests" "$work/mount"
+cp dynfilefs.c "$work/"
+cp tests/io.c "$work/tests/"
+cc -O2 -D_FILE_OFFSET_BITS=64 $(pkg-config --cflags fuse) "$work/dynfilefs.c" -o "$work/none" $(pkg-config --libs fuse)
+patch -d "$work" -p1 < "$repo/benchmarks/preallocation.patch"
+for reserve in 16 64; do
+    flags="-O2 -D_FILE_OFFSET_BITS=64 -DPREALLOCATE_SIZE=$((reserve*1024*1024))"
+    cc $flags $(pkg-config --cflags fuse) "$work/dynfilefs.c" -o "$work/reserve$reserve" $(pkg-config --libs fuse)
+    cc $flags $(pkg-config --cflags fuse) "$work/tests/io.c" -o "$work/io$reserve" $(pkg-config --libs fuse)
+    "$work/io$reserve" -f "$work/test$reserve" -m "$work/mount" -s 4 -p 3
+done
+```
+
+With root access, dosfstools, xfsprogs, e2fsprogs and strace installed:
+
+```sh
+python3 -m benchmarks.fat fat.json --binary none="$work/none" --binary reserve16="$work/reserve16" --binary reserve64="$work/reserve64" --directory /path/on/test/filesystem --source-directory /path/on/tmpfs
+python3 tests/fat.py "$work/reserve64" --baseline "$work/none" --directory /path/on/test/filesystem --output fat-validation.json
+```
+
+The runners format only fresh temporary regular images, never a block device.
+Repeat the matrix with an image directory on tmpfs for the RAM control, or on
+the actual target USB filesystem to measure that device's behavior.

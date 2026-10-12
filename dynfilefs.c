@@ -132,6 +132,13 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 }
 
 
+// Negotiate multi-page writes without changing the storage block size.
+static void *dynfilefs_init(struct fuse_conn_info *conn)
+{
+    conn->want|=conn->capable&FUSE_CAP_BIG_WRITES;
+    return NULL;
+}
+
 
 // discover real position of data for offset
 //
@@ -146,6 +153,29 @@ static off_t get_data_offset(off_t offset)
    memcpy(&target, indexes[ix] + seek, sizeof(target));
 
    return target;
+}
+
+// Combine blocks only while their physical positions (or holes) are contiguous.
+static size_t get_data_size(off_t offset, size_t size, off_t target)
+{
+    int ix=offset/split_size;
+    off_t position=offset-split_size*ix;
+    if (size > split_size-position) size=split_size-position;
+    size_t len=DATA_BLOCK_SIZE-offset%DATA_BLOCK_SIZE;
+    if (len > size) len=size;
+    char *entry=indexes[ix]+header_size+position/DATA_BLOCK_SIZE*sizeof(off_t);
+    while (len < size)
+    {
+        off_t next;
+        entry+=sizeof(off_t);
+        memcpy(&next, entry, sizeof(next));
+        if (!target && next) break;
+        if (target && next!=target+offset%DATA_BLOCK_SIZE+len) break;
+        size_t part=size-len;
+        if (part > DATA_BLOCK_SIZE) part=DATA_BLOCK_SIZE;
+        len+=part;
+    }
+    return len;
 }
 
 // this function is always called when write operation is locked
@@ -180,13 +210,11 @@ static int dynfilefs_read(const char *path, char *buf, size_t size, off_t offset
     {
         ix = offset / split_size;
 
-        rd = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
-        if (tot + rd > size) rd = size - tot;
-        len = rd;
-
         pthread_mutex_lock(&dynfilefs_mutex);
         data_offset = get_data_offset(offset);
+        rd=get_data_size(offset, size-tot, data_offset);
         pthread_mutex_unlock(&dynfilefs_mutex);
+        len=rd;
         if (data_offset != 0)
         {
            len = pread(fileno(files[ix]), buf, rd, data_offset + (offset % DATA_BLOCK_SIZE));
@@ -220,17 +248,26 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     {
        ix = offset / split_size;
 
-       wr = DATA_BLOCK_SIZE - (offset % DATA_BLOCK_SIZE);
-       if (tot + wr > size) wr = size - tot;
-       len=0;
-
        pthread_mutex_lock(&dynfilefs_mutex);
 
        data_offset = get_data_offset(offset);
        int new_block=data_offset==0;
+       wr=get_data_size(offset, size-tot, data_offset);
+       size_t first=DATA_BLOCK_SIZE-offset%DATA_BLOCK_SIZE;
+       if (first > wr) first=wr;
+       int skip=new_block && !memcmp(empty, buf, first);
 
-       // skip writing empty blocks if not already exist
-       if (!memcmp(&empty, buf, wr) && data_offset == 0)
+       // Keep zero blocks sparse when grouping newly allocated blocks.
+       if (new_block)
+           for (size_t run=first; run < wr;)
+           {
+               size_t part=wr-run;
+               if (part > DATA_BLOCK_SIZE) part=DATA_BLOCK_SIZE;
+               int empty_block=!memcmp(empty, buf+run, part);
+               if (empty_block!=skip) { wr=run; break; }
+               run+=part;
+           }
+       if (skip)
        {
           len = wr;
        }
@@ -239,8 +276,10 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
           if (new_block) data_offset=last_block_offsets[ix]+DATA_BLOCK_SIZE;
           len = pwrite(fileno(files[ix]), buf, wr, data_offset + (offset % DATA_BLOCK_SIZE));
           if (len <= 0) return with_unlock(len < 0 ? -errno : -EIO);
-          // Publish the index only after the first write succeeds.
-          if (new_block) create_data_offset(offset);
+          // Publish only blocks touched by a successful (possibly short) write.
+          if (new_block)
+              for (off_t block=0; block < (offset%DATA_BLOCK_SIZE+len+DATA_BLOCK_SIZE-1)/DATA_BLOCK_SIZE; block++)
+                  create_data_offset(offset+block*DATA_BLOCK_SIZE);
        }
 
        pthread_mutex_unlock(&dynfilefs_mutex);
@@ -286,6 +325,7 @@ static int dynfilefs_chown(const char *path, uid_t uid, gid_t gid)
 
 
 static struct fuse_operations dynfilefs_oper = {
+	.init           = dynfilefs_init,
 	.getattr	= dynfilefs_getattr,
 	.readdir	= dynfilefs_readdir,
 	.open		= dynfilefs_open,

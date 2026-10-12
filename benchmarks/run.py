@@ -15,7 +15,7 @@ import time
 @contextlib.contextmanager
 def mounted(binary, root, trace=None):
     mount=root/'mount'
-    mount.mkdir()
+    mount.mkdir(exist_ok=True)
     command=[binary, '-f', str(root/'storage'), '-m', str(mount), '-s', '512', '-p', '32']
     traced=None
     if trace:
@@ -82,7 +82,7 @@ def measure(path, pid, case, seconds, repeats):
 
 # Build an identical fully allocated fixture before every version's timed workloads.
 def benchmark(binary, parent, seconds, repeats):
-    cases=[('seq-read-128k', 'read', '128K', 1, False), ('seq-write-128k', 'write', '128K', 1, False), ('rand-read-4k-8', 'randread', '4K', 8, False), ('rand-write-4k-8', 'randwrite', '4K', 8, False), ('fsync-4k', 'randwrite', '4K', 1, True)]
+    cases=[('seq-read-128k', 'read', '128K', 1, False), ('seq-write-128k', 'write', '128K', 1, False), ('seq-read-1m', 'read', '1M', 1, False), ('seq-write-1m', 'write', '1M', 1, False), ('rand-read-4k-8', 'randread', '4K', 8, False), ('rand-write-4k-8', 'randwrite', '4K', 8, False), ('fsync-4k', 'randwrite', '4K', 1, True)]
     results=[]
     with tempfile.TemporaryDirectory(prefix='dynfilefs-bench-', dir=parent) as folder:
         root=Path(folder)

@@ -1,0 +1,2180 @@
+{
+  "date": "2026-10-12",
+  "environment": {
+    "virtualization": "VirtualBox 7.1.10",
+    "os": "Debian GNU/Linux 13 (trixie)",
+    "kernel": "7.2.9-slax",
+    "clocksource": "kvm-clock",
+    "cpus": 16,
+    "cpu_model": "AMD Ryzen 7 5700",
+    "configured_memory_mib": 18432,
+    "memory_kib": 18425100,
+    "pre_restart_configured_memory_mib": 24576,
+    "compiler": "GCC 11.2.1 20211120",
+    "compiler_archive_sha256": "978471bf7b8111dfd8c5559a23ef18b80bcd85936872f00424f1b7a5300580ee",
+    "musl": "1.2.6",
+    "upx": "5.2.1",
+    "architecture": "static ELF32 i686",
+    "fio": "3.39",
+    "python": "3.13.5",
+    "xfsprogs": "6.13.0",
+    "dosfstools": "4.2",
+    "guest_memory_pressure_total": 0
+  },
+  "builds": {
+    "fuse2-4k": {
+      "source_commit": "a43e5f99822d3343be3c9669a6067b05d389f5a0",
+      "libfuse": "2.9.9",
+      "format": 500,
+      "block_bytes": 4096,
+      "sha256": "cf7c220ad0a02151193a7b1bbf972e183c2dfd86b208fe062ee7283956eb7493"
+    },
+    "fuse3-4k": {
+      "source_commit": "416263152d9dfddecf36b55bfd848ad95ea55cc8",
+      "libfuse": "3.18.3",
+      "format": 500,
+      "block_bytes": 4096,
+      "sha256": "b511f61f64015fa92dfd8d61d5f39e1f0e176745a4f8e4570ee7de5ee59e9822"
+    },
+    "fuse3-512k": {
+      "source_commit": "6eb3678544bd8a5415c9f2fc3a63152498ca607a",
+      "libfuse": "3.18.3",
+      "format": 501,
+      "block_bytes": 524288,
+      "sha256": "1c1958dee80a9578a50282d1a9e015c5f7acc5f85da36b81ac7c05d797e8e0f4"
+    }
+  },
+  "method": {
+    "build": "All benchmark binaries were rebuilt using static/build.sh with the pinned compiler archive.",
+    "sync": "Synchronization logic is unchanged from a43e5f9; no preallocation is used.",
+    "micro": "512 MiB fully allocated fixture on tmpfs; direct frontend I/O; warm backing-file cache; three samples of three seconds per workload.",
+    "fat": "Fresh regular FAT32 loop images on ext4, 32 KiB clusters, identical input contents, alternating variant order, three repetitions.",
+    "integrity": "Compare file contents after remounting XFS, dynfilefs and FAT32; timestamps and other metadata are excluded from SHA-256.",
+    "allocation": "Sum storage-part st_blocks times 512 after synchronization; the main metadata file is excluded.",
+    "tracing": "Separate 16 MiB write and read with 128 KiB requests, excluded from timings."
+  },
+  "limitations": [
+    "Earlier FAT runs affected by HostMemoryLow or temporary cgroup limits were discarded.",
+    "The VM was restarted with 18 GiB. Ample host memory and zero guest memory-pressure events did not eliminate VirtualBox timer catch-up warnings.",
+    "FAT32 timing medians are exploratory. Large-file copy ranges overlap widely; these data do not establish a reliable disk-write speedup.",
+    "The first post-restart baseline microbenchmark stalled. A complete baseline rerun at the end is provided separately; no samples were removed from either run.",
+    "Pre-restart tmpfs runs are retained as preliminary results and are not the headline baseline.",
+    "These are VM loop-image and warm-cache measurements, not physical USB or cold-drive throughput.",
+    "512 KiB blocks amplify spaced 4 KiB writes from 5.41 MiB to 500.50 MiB on FAT32."
+  ],
+  "validation": [
+    "Full pinned 32-bit static/build.sh passed for the intermediate and final versions.",
+    "Native 64-bit autogen/configure/make with libfuse 3.18.3 passed.",
+    "32-bit musl callback tests passed: ENOSPC, short-write publication, concurrent partial writes, per-part concurrency, fsync EIO/retry and buffer/descriptor reads.",
+    "64-bit AddressSanitizer and UndefinedBehaviorSanitizer callback tests passed.",
+    "Format-501 integration passed: zeros, odd offsets, 512 KiB boundaries, split boundaries, partial physical tails, EOF, remounts, concurrent writes/fsync and loop-mounted ext4.",
+    "Formats 400 and 500 were rejected without modifying their fixture files.",
+    "Format-500 interoperability passed in both directions for the intermediate FUSE 3 build.",
+    "Format-501 interoperability passed in both directions between 32-bit static and 64-bit autotools builds.",
+    "All nine FAT32 matrix cases passed content/zero checks and all 36 fsck.fat checks passed.",
+    "One additional final-runner FAT32/XFS case passed after making fixture deletion contingent on successful unmount and fsck."
+  ],
+  "fuse_negotiation": {
+    "libfuse": "3.18.3",
+    "protocol": "7.45",
+    "max_write": 1048576,
+    "observed_read_request_bytes": 1048576,
+    "observed_write_request_bytes": 1048576
+  },
+  "fat_matrix": {
+    "filesystem": "XFS / dynfilefs / FAT32 / loop image",
+    "image_mib": 8192,
+    "cluster_bytes": 32768,
+    "xfs_virtual_mib": 3072,
+    "xfs_split_mib": 256,
+    "large_bytes": 1073741824,
+    "small_files": 1000,
+    "small_bytes": 16384,
+    "workers": 8,
+    "gap_writes": 1000,
+    "gap_write_bytes": 4096,
+    "gap_stride_bytes": 524288,
+    "repeats": 3,
+    "variants": {
+      "fuse2-4k": {
+        "xfs": [
+          {
+            "large_seconds": 7.841251895000028,
+            "large_mib_s": 130.59139200118713,
+            "small_seconds": 0.4472979129999999,
+            "small_files_s": 2235.6464694705614,
+            "read_seconds": 1.8256072559999552,
+            "read_mib_s": 560.9092517761252,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33560/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 48.017884138,
+            "large_mib_s": 21.32538778795618,
+            "small_seconds": 4.369319947999998,
+            "small_files_s": 228.8685680840877,
+            "read_seconds": 1.47300053999993,
+            "read_mib_s": 695.1796501038951,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33559/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 21.82830366899998,
+            "large_mib_s": 46.9115702038844,
+            "small_seconds": 4.401193313000022,
+            "small_files_s": 227.21110591671825,
+            "read_seconds": 1.4970132140000487,
+            "read_mib_s": 684.0286982262847,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33559/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "gaps": [
+          {
+            "seconds": 0.5195380039999691,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 8.752484632999995,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 0.8673526700000593,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "xfs_median": {
+          "large_seconds": 21.82830366899998,
+          "large_mib_s": 46.9115702038844,
+          "small_seconds": 4.369319947999998,
+          "small_files_s": 228.8685680840877,
+          "read_seconds": 1.4970132140000487,
+          "read_mib_s": 684.0286982262847,
+          "allocated_bytes": 1098940416,
+          "storage_bytes": 1098715136
+        },
+        "gaps_median": {
+          "seconds": 0.8673526700000593,
+          "allocated_bytes": 5668864,
+          "storage_bytes": 5210112
+        }
+      },
+      "fuse3-4k": {
+        "xfs": [
+          {
+            "large_seconds": 58.279854027,
+            "large_mib_s": 17.570394042606893,
+            "small_seconds": 0.3705123370000365,
+            "small_files_s": 2698.9654598192274,
+            "read_seconds": 2.430098018000024,
+            "read_mib_s": 421.38217981954256,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33559/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 19.619725114999994,
+            "large_mib_s": 52.19237242101393,
+            "small_seconds": 5.454375612000035,
+            "small_files_s": 183.33904210775748,
+            "read_seconds": 2.834694708000029,
+            "read_mib_s": 361.23819510795425,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33559/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 24.23383146699996,
+            "large_mib_s": 42.25497736065451,
+            "small_seconds": 3.8694273849999945,
+            "small_files_s": 258.4361716869385,
+            "read_seconds": 2.5181470170000466,
+            "read_mib_s": 406.6482191416789,
+            "allocated_bytes": 1098940416,
+            "storage_bytes": 1098715136,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33559/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "gaps": [
+          {
+            "seconds": 4.3018730050000045,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 18.461286983000036,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 0.12991177999992942,
+            "allocated_bytes": 5668864,
+            "storage_bytes": 5210112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 177/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "xfs_median": {
+          "large_seconds": 24.23383146699996,
+          "large_mib_s": 42.25497736065451,
+          "small_seconds": 3.8694273849999945,
+          "small_files_s": 258.4361716869385,
+          "read_seconds": 2.5181470170000466,
+          "read_mib_s": 406.6482191416789,
+          "allocated_bytes": 1098940416,
+          "storage_bytes": 1098715136
+        },
+        "gaps_median": {
+          "seconds": 4.3018730050000045,
+          "allocated_bytes": 5668864,
+          "storage_bytes": 5210112
+        }
+      },
+      "fuse3-512k": {
+        "xfs": [
+          {
+            "large_seconds": 9.613554211000007,
+            "large_mib_s": 106.51627665742188,
+            "small_seconds": 0.7325665500000014,
+            "small_files_s": 1365.063692848108,
+            "read_seconds": 2.4322943299999906,
+            "read_mib_s": 421.0016803352923,
+            "allocated_bytes": 1099857920,
+            "storage_bytes": 1099845632,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33570/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 63.48661655199999,
+            "large_mib_s": 16.12938372863629,
+            "small_seconds": 2.1385616600000503,
+            "small_files_s": 467.6040063301128,
+            "read_seconds": 2.455179090999991,
+            "read_mib_s": 417.0775173809933,
+            "allocated_bytes": 1099890688,
+            "storage_bytes": 1099845632,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33571/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "large_seconds": 18.577796626999998,
+            "large_mib_s": 55.11956129995373,
+            "small_seconds": 2.310908014000006,
+            "small_files_s": 432.73033541005213,
+            "read_seconds": 2.401278292000029,
+            "read_mib_s": 426.43953573040824,
+            "allocated_bytes": 1099923456,
+            "storage_bytes": 1099866112,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33572/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "gaps": [
+          {
+            "seconds": 7.090361481000002,
+            "allocated_bytes": 524812288,
+            "storage_bytes": 524353536,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 16020/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 5.986013965000041,
+            "allocated_bytes": 524812288,
+            "storage_bytes": 524353536,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 16020/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          },
+          {
+            "seconds": 15.134335272000044,
+            "allocated_bytes": 524812288,
+            "storage_bytes": 524353536,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 16020/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "xfs_median": {
+          "large_seconds": 18.577796626999998,
+          "large_mib_s": 55.11956129995373,
+          "small_seconds": 2.1385616600000503,
+          "small_files_s": 467.6040063301128,
+          "read_seconds": 2.4322943299999906,
+          "read_mib_s": 421.0016803352923,
+          "allocated_bytes": 1099890688,
+          "storage_bytes": 1099845632
+        },
+        "gaps_median": {
+          "seconds": 7.090361481000002,
+          "allocated_bytes": 524812288,
+          "storage_bytes": 524353536
+        }
+      }
+    },
+    "image_backing_filesystem": "ext4"
+  },
+  "final_runner_validation": {
+    "filesystem": "XFS / dynfilefs / FAT32 / loop image",
+    "image_mib": 8192,
+    "cluster_bytes": 32768,
+    "xfs_virtual_mib": 3072,
+    "xfs_split_mib": 256,
+    "large_bytes": 1073741824,
+    "small_files": 1000,
+    "small_bytes": 16384,
+    "workers": 8,
+    "gap_writes": 1000,
+    "gap_write_bytes": 4096,
+    "gap_stride_bytes": 524288,
+    "repeats": 1,
+    "variants": {
+      "fuse3-512k": {
+        "xfs": [
+          {
+            "large_seconds": 39.11356138500014,
+            "large_mib_s": 26.180178018581017,
+            "small_seconds": 1.7211357399999088,
+            "small_files_s": 581.0116987054449,
+            "read_seconds": 2.3098734010000044,
+            "read_mib_s": 443.31433902684176,
+            "allocated_bytes": 1099857920,
+            "storage_bytes": 1099841536,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 16 files, 33570/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "gaps": [
+          {
+            "seconds": 10.566935868999963,
+            "allocated_bytes": 524812288,
+            "storage_bytes": 524353536,
+            "fsck": [
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 19 files, 16020/262078 clusters\n",
+              "fsck.fat 4.2 (2021-01-31)\nimage.fat: 0 files, 1/262078 clusters\n"
+            ]
+          }
+        ],
+        "xfs_median": {
+          "large_seconds": 39.11356138500014,
+          "large_mib_s": 26.180178018581017,
+          "small_seconds": 1.7211357399999088,
+          "small_files_s": 581.0116987054449,
+          "read_seconds": 2.3098734010000044,
+          "read_mib_s": 443.31433902684176,
+          "allocated_bytes": 1099857920,
+          "storage_bytes": 1099841536
+        },
+        "gaps_median": {
+          "seconds": 10.566935868999963,
+          "allocated_bytes": 524812288,
+          "storage_bytes": 524353536
+        }
+      }
+    },
+    "image_backing_filesystem": "ext4"
+  },
+  "microbenchmarks": {
+    "fuse2-4k": {
+      "binary": "fuse2-4k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 636.0248441696167
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 1933.855381011963,
+              "iops": 15470.843052,
+              "latency_us": 63.830664728,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 60.46656435716338
+            },
+            {
+              "mib_s": 1286.237919807434,
+              "iops": 10289.903366,
+              "latency_us": 96.28705145699999,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 41.422675041048024
+            },
+            {
+              "mib_s": 56.46235752105713,
+              "iops": 451.698867,
+              "latency_us": 2209.180158555,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 4.274486655268615
+            }
+          ],
+          "median": {
+            "mib_s": 1286.237919807434,
+            "iops": 10289.903366,
+            "latency_us": 96.28705145699999,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 41.422675041048024
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 47.95204734802246,
+              "iops": 383.616384,
+              "latency_us": 2570.548304687,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 5.184072038196889
+            },
+            {
+              "mib_s": 67.76907634735107,
+              "iops": 542.152616,
+              "latency_us": 1815.2174351570002,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 6.373794840155516
+            },
+            {
+              "mib_s": 58.60805797576904,
+              "iops": 468.864469,
+              "latency_us": 2105.04025,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 5.4363585991015135
+            }
+          ],
+          "median": {
+            "mib_s": 58.60805797576904,
+            "iops": 468.864469,
+            "latency_us": 2105.04025,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 5.4363585991015135
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 33.060556411743164,
+              "iops": 33.060556,
+              "latency_us": 30202.118544554,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 3.9608697495416982
+            },
+            {
+              "mib_s": 42.35605525970459,
+              "iops": 42.356056,
+              "latency_us": 23571.273453125,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 4.485397421173258
+            },
+            {
+              "mib_s": 55.314894676208496,
+              "iops": 55.314895,
+              "latency_us": 18057.514987952003,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 4.132410289372788
+            }
+          ],
+          "median": {
+            "mib_s": 42.35605525970459,
+            "iops": 42.356056,
+            "latency_us": 23571.273453125,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 4.132410289372788
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 928.357213973999,
+              "iops": 928.357214,
+              "latency_us": 952.7522203880001,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 37.513982657095
+            },
+            {
+              "mib_s": 1458.847050666809,
+              "iops": 1458.847051,
+              "latency_us": 582.02219164,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 55.189993080773306
+            },
+            {
+              "mib_s": 1528.823724746704,
+              "iops": 1528.823725,
+              "latency_us": 558.714583043,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.39367219344209
+            }
+          ],
+          "median": {
+            "mib_s": 1458.847050666809,
+            "iops": 1458.847051,
+            "latency_us": 582.02219164,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 54.39367219344209
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 137.88372611999512,
+              "iops": 35298.233922,
+              "latency_us": 224.604585151,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 262.79821727452423
+            },
+            {
+              "mib_s": 148.0196704864502,
+              "iops": 37893.035655,
+              "latency_us": 209.121712805,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 258.54714291910864
+            },
+            {
+              "mib_s": 152.38800525665283,
+              "iops": 39011.329557,
+              "latency_us": 203.076010805,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 263.5023463893995
+            }
+          ],
+          "median": {
+            "mib_s": 148.0196704864502,
+            "iops": 37893.035655,
+            "latency_us": 209.121712805,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 262.79821727452423
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 96.2765007019043,
+              "iops": 24646.784405,
+              "latency_us": 323.156841695,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 36.07088380829058
+            },
+            {
+              "mib_s": 91.53068733215332,
+              "iops": 23431.856048,
+              "latency_us": 339.835361467,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 33.85466471815569
+            },
+            {
+              "mib_s": 99.82740116119385,
+              "iops": 25555.814728,
+              "latency_us": 311.634949161,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 36.063940128577215
+            }
+          ],
+          "median": {
+            "mib_s": 96.2765007019043,
+            "iops": 24646.784405,
+            "latency_us": 323.156841695,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 36.063940128577215
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 60.452505111694336,
+              "iops": 15475.841386,
+              "latency_us": 34.214317917,
+              "sync_us": 28.765370052999998,
+              "daemon_cpu_percent": 39.18115942119545
+            },
+            {
+              "mib_s": 60.03467559814453,
+              "iops": 15368.877041,
+              "latency_us": 34.334069186,
+              "sync_us": 28.868217645,
+              "daemon_cpu_percent": 24.97881523721281
+            },
+            {
+              "mib_s": 56.42650318145752,
+              "iops": 14445.184938,
+              "latency_us": 36.749375502,
+              "sync_us": 30.472793675000002,
+              "daemon_cpu_percent": 17.922043200918345
+            }
+          ],
+          "median": {
+            "mib_s": 60.03467559814453,
+            "iops": 15368.877041,
+            "latency_us": 34.334069186,
+            "sync_us": 28.868217645,
+            "daemon_cpu_percent": 24.97881523721281
+          }
+        }
+      ]
+    },
+    "fuse3-4k": {
+      "binary": "fuse3-4k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 864.8648643493652
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 2252.2909021377563,
+              "iops": 18018.327224,
+              "latency_us": 54.987869732,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 43.24079817079049
+            },
+            {
+              "mib_s": 2174.8167276382446,
+              "iops": 17398.533822,
+              "latency_us": 56.925888859,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 57.9242195474902
+            },
+            {
+              "mib_s": 2220.3015661239624,
+              "iops": 17762.412529,
+              "latency_us": 55.752838327,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 37.904633638841375
+            }
+          ],
+          "median": {
+            "mib_s": 2220.3015661239624,
+            "iops": 17762.412529,
+            "latency_us": 55.752838327,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 43.24079817079049
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 1252.3742084503174,
+              "iops": 10018.993669,
+              "latency_us": 85.310757774,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 51.9739715686849
+            },
+            {
+              "mib_s": 1304.398533821106,
+              "iops": 10435.188271,
+              "latency_us": 81.649235982,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 46.9492658823286
+            },
+            {
+              "mib_s": 1430.6064643859863,
+              "iops": 11444.851716,
+              "latency_us": 73.447077738,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 52.6756152688631
+            }
+          ],
+          "median": {
+            "mib_s": 1304.398533821106,
+            "iops": 10435.188271,
+            "latency_us": 81.649235982,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 51.9739715686849
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 4521.15961265564,
+              "iops": 4521.159613,
+              "latency_us": 220.23654569599998,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 71.51846760747259
+            },
+            {
+              "mib_s": 4772.742418289185,
+              "iops": 4772.742419,
+              "latency_us": 208.67894435500003,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 65.71250827191236
+            },
+            {
+              "mib_s": 4582.472508430481,
+              "iops": 4582.472509,
+              "latency_us": 217.343497164,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 75.97455574082775
+            }
+          ],
+          "median": {
+            "mib_s": 4582.472508430481,
+            "iops": 4582.472509,
+            "latency_us": 217.343497164,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 71.51846760747259
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 2159.613461494446,
+              "iops": 2159.613462,
+              "latency_us": 367.25428761,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 53.6219328743536
+            },
+            {
+              "mib_s": 1980.006664276123,
+              "iops": 1980.006664,
+              "latency_us": 402.012793167,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 56.965890410417096
+            },
+            {
+              "mib_s": 1962.3458843231201,
+              "iops": 1962.345885,
+              "latency_us": 410.463153167,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 60.8446126907324
+            }
+          ],
+          "median": {
+            "mib_s": 1980.006664276123,
+            "iops": 1980.006664,
+            "latency_us": 402.012793167,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 56.965890410417096
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 190.09288501739502,
+              "iops": 48663.77874,
+              "latency_us": 162.49407023400002,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 291.3557373806689
+            },
+            {
+              "mib_s": 191.37891483306885,
+              "iops": 48993.002333,
+              "latency_us": 161.357850756,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 305.41041055191687
+            },
+            {
+              "mib_s": 188.89666938781738,
+              "iops": 48357.547484,
+              "latency_us": 163.535171836,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 292.2630976279525
+            }
+          ],
+          "median": {
+            "mib_s": 190.09288501739502,
+            "iops": 48663.77874,
+            "latency_us": 162.49407023400002,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 292.2630976279525
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 85.9361982345581,
+              "iops": 21999.666778,
+              "latency_us": 361.88631536900004,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.62477780507258
+            },
+            {
+              "mib_s": 89.80469989776611,
+              "iops": 22990.003332,
+              "latency_us": 346.328504761,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 36.87789837335035
+            },
+            {
+              "mib_s": 88.49263763427734,
+              "iops": 22654.115295,
+              "latency_us": 351.429449173,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 37.42034507583442
+            }
+          ],
+          "median": {
+            "mib_s": 88.49263763427734,
+            "iops": 22654.115295,
+            "latency_us": 351.429449173,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 37.42034507583442
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 56.37964344024658,
+              "iops": 14433.188937,
+              "latency_us": 36.543716974000006,
+              "sync_us": 30.826333364,
+              "daemon_cpu_percent": 34.39136998493808
+            },
+            {
+              "mib_s": 55.70929431915283,
+              "iops": 14261.579474,
+              "latency_us": 36.876430641,
+              "sync_us": 31.361237091,
+              "daemon_cpu_percent": 38.60840119560615
+            },
+            {
+              "mib_s": 56.80137825012207,
+              "iops": 14541.152949,
+              "latency_us": 36.306544388,
+              "sync_us": 30.648065333999998,
+              "daemon_cpu_percent": 42.31002560361158
+            }
+          ],
+          "median": {
+            "mib_s": 56.37964344024658,
+            "iops": 14433.188937,
+            "latency_us": 36.543716974000006,
+            "sync_us": 30.826333364,
+            "daemon_cpu_percent": 38.60840119560615
+          }
+        }
+      ]
+    },
+    "fuse3-512k": {
+      "binary": "fuse3-512k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 998.0506820678711
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 2254.873374938965,
+              "iops": 18038.987004,
+              "latency_us": 54.893641618000004,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 35.295491824225
+            },
+            {
+              "mib_s": 2267.035987854004,
+              "iops": 18136.287904,
+              "latency_us": 54.589576387,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 58.89282671790139
+            },
+            {
+              "mib_s": 2359.21359539032,
+              "iops": 18873.708764,
+              "latency_us": 52.475357627,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.65740685672133
+            }
+          ],
+          "median": {
+            "mib_s": 2267.035987854004,
+            "iops": 18136.287904,
+            "latency_us": 54.589576387,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 54.65740685672133
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 1568.810396194458,
+              "iops": 12550.483172,
+              "latency_us": 66.929798163,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 41.82222668482917
+            },
+            {
+              "mib_s": 1543.402198791504,
+              "iops": 12347.217594,
+              "latency_us": 67.956617315,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 36.134408703834815
+            },
+            {
+              "mib_s": 1534.2802391052246,
+              "iops": 12274.241919,
+              "latency_us": 68.471201575,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.06306571790523
+            }
+          ],
+          "median": {
+            "mib_s": 1543.402198791504,
+            "iops": 12347.217594,
+            "latency_us": 67.956617315,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 38.06306571790523
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 4725.758080482483,
+              "iops": 4725.758081,
+              "latency_us": 210.55987505299998,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 70.88445168848502
+            },
+            {
+              "mib_s": 4744.751749038696,
+              "iops": 4744.751749,
+              "latency_us": 209.894841773,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.13391308725167
+            },
+            {
+              "mib_s": 4926.024658203125,
+              "iops": 4926.024658,
+              "latency_us": 202.209951498,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 68.25094846054894
+            }
+          ],
+          "median": {
+            "mib_s": 4744.751749038696,
+            "iops": 4744.751749,
+            "latency_us": 209.894841773,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 68.25094846054894
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 2185.9380197525024,
+              "iops": 2185.938021,
+              "latency_us": 366.237758994,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 59.33736215993255
+            },
+            {
+              "mib_s": 2028.3238916397095,
+              "iops": 2028.323892,
+              "latency_us": 393.945165927,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 62.61064907868576
+            },
+            {
+              "mib_s": 2011.6627788543701,
+              "iops": 2011.662779,
+              "latency_us": 397.437691072,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 28.14359749283058
+            }
+          ],
+          "median": {
+            "mib_s": 2028.3238916397095,
+            "iops": 2028.323892,
+            "latency_us": 393.945165927,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 59.33736215993255
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 193.4628553390503,
+              "iops": 49526.49117,
+              "latency_us": 159.558476811,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 301.009380077802
+            },
+            {
+              "mib_s": 195.3775815963745,
+              "iops": 50016.661113,
+              "latency_us": 157.966556189,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 283.6545906961142
+            },
+            {
+              "mib_s": 204.0843152999878,
+              "iops": 52245.584805,
+              "latency_us": 151.234274726,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 310.5799574104057
+            }
+          ],
+          "median": {
+            "mib_s": 195.3775815963745,
+            "iops": 50016.661113,
+            "latency_us": 157.966556189,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 301.009380077802
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 98.65331268310547,
+              "iops": 25255.248251,
+              "latency_us": 315.349691652,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 36.2058116488006
+            },
+            {
+              "mib_s": 96.96116828918457,
+              "iops": 24822.059314,
+              "latency_us": 320.818964157,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.59122372611045
+            },
+            {
+              "mib_s": 96.06042766571045,
+              "iops": 24591.46951,
+              "latency_us": 323.85486554000005,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 39.267555561455126
+            }
+          ],
+          "median": {
+            "mib_s": 96.96116828918457,
+            "iops": 24822.059314,
+            "latency_us": 320.818964157,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 38.59122372611045
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 59.81729984283447,
+              "iops": 15313.228924,
+              "latency_us": 34.391054053,
+              "sync_us": 29.165893633,
+              "daemon_cpu_percent": 37.891258993255924
+            },
+            {
+              "mib_s": 54.7031192779541,
+              "iops": 14003.998667,
+              "latency_us": 37.860916575000005,
+              "sync_us": 31.619765211,
+              "daemon_cpu_percent": 38.009316306632435
+            },
+            {
+              "mib_s": 60.81175994873047,
+              "iops": 15567.81073,
+              "latency_us": 33.906252638,
+              "sync_us": 28.618400415,
+              "daemon_cpu_percent": 39.891248604328744
+            }
+          ],
+          "median": {
+            "mib_s": 59.81729984283447,
+            "iops": 15313.228924,
+            "latency_us": 34.391054053,
+            "sync_us": 29.165893633,
+            "daemon_cpu_percent": 38.009316306632435
+          }
+        }
+      ]
+    }
+  },
+  "baseline_rerun": {
+    "binary": "fuse2-4k",
+    "kernel": "7.2.9-slax",
+    "cpus": 16,
+    "fio": "fio-3.39",
+    "seconds": 3,
+    "repeats": 3,
+    "filesystem": "tmpfs",
+    "results": [
+      {
+        "case": "first-write-512m",
+        "median": {
+          "mib_s": 1024.0
+        }
+      },
+      {
+        "case": "seq-read-128k",
+        "samples": [
+          {
+            "mib_s": 2359.5051641464233,
+            "iops": 18876.04132,
+            "latency_us": 52.39706048,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 22.831150842243265
+          },
+          {
+            "mib_s": 2118.7104291915894,
+            "iops": 16949.683439,
+            "latency_us": 58.292369559,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 51.74095538631619
+          },
+          {
+            "mib_s": 2194.351881980896,
+            "iops": 17554.815062,
+            "latency_us": 56.341715994,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 56.93412602946388
+          }
+        ],
+        "median": {
+          "mib_s": 2194.351881980896,
+          "iops": 17554.815062,
+          "latency_us": 56.341715994,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 51.74095538631619
+        }
+      },
+      {
+        "case": "seq-write-128k",
+        "samples": [
+          {
+            "mib_s": 1433.022325515747,
+            "iops": 11464.178607,
+            "latency_us": 73.577492239,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 35.96962741627065
+          },
+          {
+            "mib_s": 1547.5674772262573,
+            "iops": 12380.53982,
+            "latency_us": 67.8495513,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 29.25825405038132
+          },
+          {
+            "mib_s": 1550.1499490737915,
+            "iops": 12401.1996,
+            "latency_us": 67.658217621,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 48.235348920311544
+          }
+        ],
+        "median": {
+          "mib_s": 1547.5674772262573,
+          "iops": 12380.53982,
+          "latency_us": 67.8495513,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 35.96962741627065
+        }
+      },
+      {
+        "case": "seq-read-1m",
+        "samples": [
+          {
+            "mib_s": 2520.4931688308716,
+            "iops": 2520.493169,
+            "latency_us": 395.576236383,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 58.372647264820046
+          },
+          {
+            "mib_s": 2517.494168281555,
+            "iops": 2517.494169,
+            "latency_us": 395.995737525,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 32.58424461512901
+          },
+          {
+            "mib_s": 2543.4855041503906,
+            "iops": 2543.485505,
+            "latency_us": 391.964360147,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 50.24514392367761
+          }
+        ],
+        "median": {
+          "mib_s": 2520.4931688308716,
+          "iops": 2520.493169,
+          "latency_us": 395.576236383,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 50.24514392367761
+        }
+      },
+      {
+        "case": "seq-write-1m",
+        "samples": [
+          {
+            "mib_s": 1613.46217918396,
+            "iops": 1613.462179,
+            "latency_us": 525.140755886,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 47.78666823750561
+          },
+          {
+            "mib_s": 1620.7930688858032,
+            "iops": 1620.793069,
+            "latency_us": 521.455559211,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 54.74243592315845
+          },
+          {
+            "mib_s": 1577.4741744995117,
+            "iops": 1577.474175,
+            "latency_us": 537.6134338830001,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 45.68317380821522
+          }
+        ],
+        "median": {
+          "mib_s": 1613.46217918396,
+          "iops": 1613.462179,
+          "latency_us": 525.140755886,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 47.78666823750561
+        }
+      },
+      {
+        "case": "rand-read-4k-8",
+        "samples": [
+          {
+            "mib_s": 153.66492366790771,
+            "iops": 39338.220593,
+            "latency_us": 201.408111627,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 276.0558131851428
+          },
+          {
+            "mib_s": 148.25006198883057,
+            "iops": 37952.015995,
+            "latency_us": 208.790576966,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 273.5144723500317
+          },
+          {
+            "mib_s": 156.7875804901123,
+            "iops": 40137.620793,
+            "latency_us": 197.355579023,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 269.40936731015984
+          }
+        ],
+        "median": {
+          "mib_s": 153.66492366790771,
+          "iops": 39338.220593,
+          "latency_us": 201.408111627,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 273.5144723500317
+        }
+      },
+      {
+        "case": "rand-write-4k-8",
+        "samples": [
+          {
+            "mib_s": 100.83227443695068,
+            "iops": 25813.062313,
+            "latency_us": 308.557134073,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 37.03508763232288
+          },
+          {
+            "mib_s": 94.9696455001831,
+            "iops": 24312.229257,
+            "latency_us": 327.614261866,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 38.096349564762335
+          },
+          {
+            "mib_s": 94.1483039855957,
+            "iops": 24101.966011,
+            "latency_us": 330.53301067300004,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 34.84880657268244
+          }
+        ],
+        "median": {
+          "mib_s": 94.9696455001831,
+          "iops": 24312.229257,
+          "latency_us": 327.614261866,
+          "sync_us": 0.0,
+          "daemon_cpu_percent": 37.03508763232288
+        }
+      },
+      {
+        "case": "fsync-4k",
+        "samples": [
+          {
+            "mib_s": 53.35981750488281,
+            "iops": 13660.113296,
+            "latency_us": 38.791923159,
+            "sync_us": 32.437244772999996,
+            "daemon_cpu_percent": 40.19722500660727
+          },
+          {
+            "mib_s": 51.97746562957764,
+            "iops": 13306.231256,
+            "latency_us": 39.840076405,
+            "sync_us": 33.246807272,
+            "daemon_cpu_percent": 42.059520809254515
+          },
+          {
+            "mib_s": 49.67875289916992,
+            "iops": 12717.760746,
+            "latency_us": 41.576856128,
+            "sync_us": 34.779424866,
+            "daemon_cpu_percent": 36.3239823855893
+          }
+        ],
+        "median": {
+          "mib_s": 51.97746562957764,
+          "iops": 13306.231256,
+          "latency_us": 39.840076405,
+          "sync_us": 33.246807272,
+          "daemon_cpu_percent": 40.19722500660727
+        }
+      }
+    ]
+  },
+  "pre_restart_exploratory_microbenchmarks": {
+    "fuse2-4k": {
+      "binary": "fuse2-4k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 941.1764698028564
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 2129.665111541748,
+              "iops": 17037.320893,
+              "latency_us": 58.195318841,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 29.144768509257048
+            },
+            {
+              "mib_s": 2106.839385986328,
+              "iops": 16854.715095,
+              "latency_us": 58.798874933,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 59.44919235864225
+            },
+            {
+              "mib_s": 1984.0886363983154,
+              "iops": 15872.709097,
+              "latency_us": 62.407108242,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 42.3898511873975
+            }
+          ],
+          "median": {
+            "mib_s": 2106.839385986328,
+            "iops": 16854.715095,
+            "latency_us": 58.798874933,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 42.3898511873975
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 1120.5014991760254,
+              "iops": 8964.011996,
+              "latency_us": 96.665311327,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 53.44972705293035
+            },
+            {
+              "mib_s": 1428.3988666534424,
+              "iops": 11427.190936,
+              "latency_us": 74.505747208,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.42261804966029
+            },
+            {
+              "mib_s": 1338.3455505371094,
+              "iops": 10706.764412,
+              "latency_us": 79.409495627,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 49.65993379484674
+            }
+          ],
+          "median": {
+            "mib_s": 1338.3455505371094,
+            "iops": 10706.764412,
+            "latency_us": 79.409495627,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 53.44972705293035
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 1722.4258575439453,
+              "iops": 1722.425858,
+              "latency_us": 578.970531631,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 56.256672041294
+            },
+            {
+              "mib_s": 1926.024658203125,
+              "iops": 1926.024658,
+              "latency_us": 517.832329585,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 34.18761263262774
+            },
+            {
+              "mib_s": 1778.4071969985962,
+              "iops": 1778.407198,
+              "latency_us": 560.708601836,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 58.601402519053046
+            }
+          ],
+          "median": {
+            "mib_s": 1778.4071969985962,
+            "iops": 1778.407198,
+            "latency_us": 560.708601836,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 56.256672041294
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 1412.1959342956543,
+              "iops": 1412.195935,
+              "latency_us": 609.4958485129999,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 56.04666391805582
+            },
+            {
+              "mib_s": 1373.208930015564,
+              "iops": 1373.20893,
+              "latency_us": 630.322704683,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.31067234009576
+            },
+            {
+              "mib_s": 1461.8460512161255,
+              "iops": 1461.846051,
+              "latency_us": 589.0859614770001,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 52.4308005912568
+            }
+          ],
+          "median": {
+            "mib_s": 1412.1959342956543,
+            "iops": 1412.195935,
+            "latency_us": 609.4958485129999,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 54.31067234009576
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 136.41156005859375,
+              "iops": 34921.359547,
+              "latency_us": 227.060919035,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 262.52694902194423
+            },
+            {
+              "mib_s": 143.8882350921631,
+              "iops": 36835.388204,
+              "latency_us": 215.176548547,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 271.64508776986884
+            },
+            {
+              "mib_s": 143.1853437423706,
+              "iops": 36655.448184,
+              "latency_us": 216.240687027,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 270.18465201245476
+            }
+          ],
+          "median": {
+            "mib_s": 143.1853437423706,
+            "iops": 36655.448184,
+            "latency_us": 216.240687027,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 270.18465201245476
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 92.25700759887695,
+              "iops": 23617.794069,
+              "latency_us": 337.280927847,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.859854044432176
+            },
+            {
+              "mib_s": 89.27623081207275,
+              "iops": 22854.715095,
+              "latency_us": 348.552942701,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.60825331486526
+            },
+            {
+              "mib_s": 89.88410091400146,
+              "iops": 23010.32989,
+              "latency_us": 346.14762414899997,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.79353063596108
+            }
+          ],
+          "median": {
+            "mib_s": 89.88410091400146,
+            "iops": 23010.32989,
+            "latency_us": 346.14762414899997,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 38.79353063596108
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 54.169443130493164,
+              "iops": 13867.377541,
+              "latency_us": 38.542456267,
+              "sync_us": 31.690264466000002,
+              "daemon_cpu_percent": 40.865848754914325
+            },
+            {
+              "mib_s": 50.89579486846924,
+              "iops": 13029.323559,
+              "latency_us": 40.93657019,
+              "sync_us": 33.765587939,
+              "daemon_cpu_percent": 40.896557265351724
+            },
+            {
+              "mib_s": 52.833950996398926,
+              "iops": 13525.491503,
+              "latency_us": 39.440934368,
+              "sync_us": 32.696162109,
+              "daemon_cpu_percent": 41.17535874533858
+            }
+          ],
+          "median": {
+            "mib_s": 52.833950996398926,
+            "iops": 13525.491503,
+            "latency_us": 39.440934368,
+            "sync_us": 32.696162109,
+            "daemon_cpu_percent": 40.896557265351724
+          }
+        }
+      ]
+    },
+    "fuse3-4k": {
+      "binary": "fuse3-4k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 925.8589506149292
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 1961.596134185791,
+              "iops": 15692.769077,
+              "latency_us": 63.132930458000004,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 57.70790829599048
+            },
+            {
+              "mib_s": 2013.4121952056885,
+              "iops": 16107.297567,
+              "latency_us": 61.513323762,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 57.84128107125754
+            },
+            {
+              "mib_s": 2013.9536819458008,
+              "iops": 16111.629457,
+              "latency_us": 61.505940539,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 56.72465586836374
+            }
+          ],
+          "median": {
+            "mib_s": 2013.4121952056885,
+            "iops": 16107.297567,
+            "latency_us": 61.513323762,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 57.70790829599048
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 1331.7644109725952,
+              "iops": 10654.115295,
+              "latency_us": 80.37265642899999,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.03314435619872
+            },
+            {
+              "mib_s": 1275.2415857315063,
+              "iops": 10201.932689,
+              "latency_us": 84.796111478,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 53.50802900081162
+            },
+            {
+              "mib_s": 1403.073974609375,
+              "iops": 11224.591803,
+              "latency_us": 75.99228570599999,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 47.48991309391877
+            }
+          ],
+          "median": {
+            "mib_s": 1331.7644109725952,
+            "iops": 10654.115295,
+            "latency_us": 80.37265642899999,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 53.50802900081162
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 3981.3395528793335,
+              "iops": 3981.339553,
+              "latency_us": 250.24786575200002,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 64.56024652644122
+            },
+            {
+              "mib_s": 3905.3648777008057,
+              "iops": 3905.364878,
+              "latency_us": 255.068393942,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 76.38507027859474
+            },
+            {
+              "mib_s": 4051.982671737671,
+              "iops": 4051.982672,
+              "latency_us": 245.864795148,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 74.97032956212209
+            }
+          ],
+          "median": {
+            "mib_s": 3981.3395528793335,
+            "iops": 3981.339553,
+            "latency_us": 250.24786575200002,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 74.97032956212209
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 1854.0486497879028,
+              "iops": 1854.04865,
+              "latency_us": 441.47432296899996,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 43.104480527051074
+            },
+            {
+              "mib_s": 1807.7307558059692,
+              "iops": 1807.730756,
+              "latency_us": 454.89586119800003,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 61.12282865641748
+            },
+            {
+              "mib_s": 1847.7174272537231,
+              "iops": 1847.717428,
+              "latency_us": 441.39070568100004,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 57.67293449791093
+            }
+          ],
+          "median": {
+            "mib_s": 1847.7174272537231,
+            "iops": 1847.717428,
+            "latency_us": 441.47432296899996,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 57.67293449791093
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 180.32140254974365,
+              "iops": 46162.27924,
+              "latency_us": 171.365135354,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 250.30368572201706
+            },
+            {
+              "mib_s": 181.10629749298096,
+              "iops": 46363.212263,
+              "latency_us": 170.63234394399998,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 291.6111898895448
+            },
+            {
+              "mib_s": 181.85084056854248,
+              "iops": 46553.815395,
+              "latency_us": 169.938547657,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 296.28000573325824
+            }
+          ],
+          "median": {
+            "mib_s": 181.10629749298096,
+            "iops": 46363.212263,
+            "latency_us": 170.63234394399998,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 291.6111898895448
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 91.47211265563965,
+              "iops": 23416.861046,
+              "latency_us": 340.170295059,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 39.34164833571283
+            },
+            {
+              "mib_s": 85.42855453491211,
+              "iops": 21869.710097,
+              "latency_us": 364.266959562,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 39.82859821627415
+            },
+            {
+              "mib_s": 87.40575981140137,
+              "iops": 22375.874708,
+              "latency_us": 356.002833492,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.93960483803916
+            }
+          ],
+          "median": {
+            "mib_s": 87.40575981140137,
+            "iops": 22375.874708,
+            "latency_us": 356.002833492,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 39.34164833571283
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 52.22738170623779,
+              "iops": 13370.20993,
+              "latency_us": 39.792694970999996,
+              "sync_us": 33.03724317699999,
+              "daemon_cpu_percent": 41.68935929325256
+            },
+            {
+              "mib_s": 51.196475982666016,
+              "iops": 13106.297901,
+              "latency_us": 40.688901429,
+              "sync_us": 33.643900488,
+              "daemon_cpu_percent": 41.384750926015876
+            },
+            {
+              "mib_s": 53.087772369384766,
+              "iops": 13590.469843,
+              "latency_us": 38.842222582000005,
+              "sync_us": 32.777141183,
+              "daemon_cpu_percent": 40.82776298667324
+            }
+          ],
+          "median": {
+            "mib_s": 52.22738170623779,
+            "iops": 13370.20993,
+            "latency_us": 39.792694970999996,
+            "sync_us": 33.03724317699999,
+            "daemon_cpu_percent": 41.384750926015876
+          }
+        }
+      ]
+    },
+    "fuse3-512k": {
+      "binary": "fuse3-512k",
+      "kernel": "7.2.9-slax",
+      "cpus": 16,
+      "fio": "fio-3.39",
+      "seconds": 3,
+      "repeats": 3,
+      "filesystem": "tmpfs",
+      "results": [
+        {
+          "case": "first-write-512m",
+          "median": {
+            "mib_s": 930.9090900421143
+          }
+        },
+        {
+          "case": "seq-read-128k",
+          "samples": [
+            {
+              "mib_s": 2002.2909021377563,
+              "iops": 16018.327224,
+              "latency_us": 61.853714464,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 55.86031713631808
+            },
+            {
+              "mib_s": 2016.1612787246704,
+              "iops": 16129.290237,
+              "latency_us": 61.421636703999994,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.8050808860665
+            },
+            {
+              "mib_s": 2045.4848375320435,
+              "iops": 16363.878707,
+              "latency_us": 60.579043516,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 54.710055299129515
+            }
+          ],
+          "median": {
+            "mib_s": 2016.1612787246704,
+            "iops": 16129.290237,
+            "latency_us": 61.421636703999994,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 54.8050808860665
+          }
+        },
+        {
+          "case": "seq-write-128k",
+          "samples": [
+            {
+              "mib_s": 1420.4848375320435,
+              "iops": 11363.878707,
+              "latency_us": 75.00201777000001,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 51.55530299492715
+            },
+            {
+              "mib_s": 1427.60746383667,
+              "iops": 11420.859713,
+              "latency_us": 74.746175001,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 50.592975640961996
+            },
+            {
+              "mib_s": 1390.578140258789,
+              "iops": 11124.625125,
+              "latency_us": 76.66689561199999,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 45.80955441341704
+            }
+          ],
+          "median": {
+            "mib_s": 1420.4848375320435,
+            "iops": 11363.878707,
+            "latency_us": 75.00201777000001,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 50.592975640961996
+          }
+        },
+        {
+          "case": "seq-read-1m",
+          "samples": [
+            {
+              "mib_s": 4012.329222679138,
+              "iops": 4012.329224,
+              "latency_us": 248.08744307,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 73.84382974359349
+            },
+            {
+              "mib_s": 4084.6384534835815,
+              "iops": 4084.638454,
+              "latency_us": 243.909960108,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 77.90065257268218
+            },
+            {
+              "mib_s": 4248.5838050842285,
+              "iops": 4248.583805,
+              "latency_us": 234.465536,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 77.07251540430961
+            }
+          ],
+          "median": {
+            "mib_s": 4084.6384534835815,
+            "iops": 4084.638454,
+            "latency_us": 243.909960108,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 77.07251540430961
+          }
+        },
+        {
+          "case": "seq-write-1m",
+          "samples": [
+            {
+              "mib_s": 2026.3245582580566,
+              "iops": 2026.324558,
+              "latency_us": 398.59639631600004,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 62.301360377794694
+            },
+            {
+              "mib_s": 1936.0213260650635,
+              "iops": 1936.021326,
+              "latency_us": 418.437290361,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 60.778827418104605
+            },
+            {
+              "mib_s": 2008.6637783050537,
+              "iops": 2008.663779,
+              "latency_us": 402.375803417,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 53.72316581586449
+            }
+          ],
+          "median": {
+            "mib_s": 2008.6637783050537,
+            "iops": 2008.663779,
+            "latency_us": 402.375803417,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 60.778827418104605
+          }
+        },
+        {
+          "case": "rand-read-4k-8",
+          "samples": [
+            {
+              "mib_s": 181.33799076080322,
+              "iops": 46422.525825,
+              "latency_us": 170.42173262600002,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 295.81972822510374
+            },
+            {
+              "mib_s": 182.3619089126587,
+              "iops": 46684.648685,
+              "latency_us": 169.341857654,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 288.9992613772032
+            },
+            {
+              "mib_s": 181.58270072937012,
+              "iops": 46485.171609,
+              "latency_us": 170.191695882,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 301.65019103401613
+            }
+          ],
+          "median": {
+            "mib_s": 181.58270072937012,
+            "iops": 46485.171609,
+            "latency_us": 170.191695882,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 295.81972822510374
+          }
+        },
+        {
+          "case": "rand-write-4k-8",
+          "samples": [
+            {
+              "mib_s": 89.94134044647217,
+              "iops": 23024.983344,
+              "latency_us": 345.898061385,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 39.450119673541394
+            },
+            {
+              "mib_s": 89.5821180343628,
+              "iops": 22933.022326,
+              "latency_us": 347.348335648,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 38.935623232812546
+            },
+            {
+              "mib_s": 90.57137203216553,
+              "iops": 23186.271243,
+              "latency_us": 343.55845932899996,
+              "sync_us": 0.0,
+              "daemon_cpu_percent": 39.09701879022918
+            }
+          ],
+          "median": {
+            "mib_s": 89.94134044647217,
+            "iops": 23024.983344,
+            "latency_us": 345.898061385,
+            "sync_us": 0.0,
+            "daemon_cpu_percent": 39.09701879022918
+          }
+        },
+        {
+          "case": "fsync-4k",
+          "samples": [
+            {
+              "mib_s": 52.681657791137695,
+              "iops": 13486.504499,
+              "latency_us": 39.394759,
+              "sync_us": 32.825608149,
+              "daemon_cpu_percent": 40.88465746276649
+            },
+            {
+              "mib_s": 52.56450939178467,
+              "iops": 13456.514495,
+              "latency_us": 39.663088650999995,
+              "sync_us": 32.837176267000004,
+              "daemon_cpu_percent": 41.43391065230625
+            },
+            {
+              "mib_s": 52.83785533905029,
+              "iops": 13526.49117,
+              "latency_us": 39.276259478,
+              "sync_us": 32.747769886,
+              "daemon_cpu_percent": 41.364715362374554
+            }
+          ],
+          "median": {
+            "mib_s": 52.681657791137695,
+            "iops": 13486.504499,
+            "latency_us": 39.394759,
+            "sync_us": 32.825608149,
+            "daemon_cpu_percent": 41.364715362374554
+          }
+        }
+      ]
+    }
+  },
+  "traces": {
+    "fuse2-4k": "System call usage summary for 32 bit mode:\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 52.39    0.007699          30       256           splice\n 46.80    0.006878          53       128           pwritev2\n  0.81    0.000119           7        17           fsync\n  0.00    0.000000           0         1           msync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.014696          36       402           total\n",
+    "fuse3-4k": "System call usage summary for 32 bit mode:\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 53.14    0.009248          72       128           pwritev2\n 46.30    0.008058          31       256           splice\n  0.56    0.000098           5        17           fsync\n  0.00    0.000000           0         1           msync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.017404          43       402           total\n",
+    "fuse3-512k": "System call usage summary for 32 bit mode:\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 49.61    0.007032          54       128           pwritev2\n 49.28    0.006985          27       256           splice\n  1.09    0.000155           9        17           fsync\n  0.02    0.000003           3         1           msync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.014175          35       402           total\n",
+    "baseline-rerun": "System call usage summary for 32 bit mode:\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 53.61    0.009481          74       128           pwritev2\n 45.77    0.008094          31       256           splice\n  0.63    0.000111           6        17           fsync\n  0.00    0.000000           0         1           msync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.017686          43       402           total\n"
+  }
+}

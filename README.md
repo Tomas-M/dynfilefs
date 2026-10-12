@@ -57,6 +57,7 @@ How to compile:
 
 Requires libfuse 3.8+ development headers and pkg-config. FUSE requests can carry
 up to 1 MiB; the kernel may negotiate a smaller limit.
+Performance measurements and reproducible workloads are in [benchmarks/README.md](benchmarks/README.md).
 
     ./autogen.sh
     ./configure

@@ -1,5 +1,5 @@
 #define _GNU_SOURCE 1
-#define FUSE_USE_VERSION 26
+#define FUSE_USE_VERSION 31
 #include <fuse.h>
 #include <unistd.h>
 #include <errno.h>
@@ -12,12 +12,13 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
 #define main dynfilefs_main
 #define pwrite test_pwrite
 #define fsync(fd) test_fsync(fd)
-#define fuse_main_real test_fuse_main_real
+#undef fuse_main
+#define fuse_main(argc, argv, ops, data) test_fuse_main_real(argc, argv, ops, sizeof(*(ops)), data)
 #include "../dynfilefs.c"
 #undef main
 #undef pwrite
 #undef fsync
-#undef fuse_main_real
+#undef fuse_main
 
 ssize_t write_budget=-1;
 int fail_sync=0;

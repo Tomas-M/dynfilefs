@@ -1,6 +1,6 @@
 # Performance checks
 
-Run on Linux as root with libfuse 2.9.x, Python 3.11+, fio, strace and e2fsprogs installed:
+Run on Linux as root with libfuse 3.8+, Python 3.11+, fio, strace and e2fsprogs installed:
 
 ```sh
 python3 tests/integration.py /absolute/path/to/dynfilefs
@@ -14,7 +14,7 @@ concurrent split-file writes and descriptor-backed reads:
 
 ```sh
 test_dir=$(mktemp -d)
-cc -D_FILE_OFFSET_BITS=64 $(pkg-config --cflags fuse) tests/io.c -o "$test_dir/io" $(pkg-config --libs fuse)
+cc -D_FILE_OFFSET_BITS=64 $(pkg-config --cflags fuse3) tests/io.c -o "$test_dir/io" $(pkg-config --libs fuse3)
 "$test_dir/io" -f "$test_dir/storage" -m "$test_dir/mount" -s 4 -p 3
 ```
 

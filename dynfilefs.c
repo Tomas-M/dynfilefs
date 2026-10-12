@@ -11,12 +11,13 @@
 
 #define _ATFILE_SOURCE 1
 #define _GNU_SOURCE 1
-#define FUSE_USE_VERSION 26
+#define FUSE_USE_VERSION 31
 
 #include <fuse.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <utime.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/mman.h>
@@ -96,7 +97,7 @@ static int dynfilefs_flush(const char *path, struct fuse_file_info *fi)
 }
 
 
-static int dynfilefs_getattr(const char *path, struct stat *stbuf)
+static int dynfilefs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
 	int res = 0;
 
@@ -114,14 +115,14 @@ static int dynfilefs_getattr(const char *path, struct stat *stbuf)
 	return res;
 }
 
-static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+static int dynfilefs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
-	filler(buf, ".", NULL, 0);
-	filler(buf, "..", NULL, 0);
-	filler(buf, dynfilefs_path + 1, NULL, 0);
+	filler(buf, ".", NULL, 0, 0);
+	filler(buf, "..", NULL, 0, 0);
+	filler(buf, dynfilefs_path + 1, NULL, 0, 0);
 
 	return 0;
 }
@@ -137,9 +138,11 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 
 
 // Negotiate large writes and descriptor-backed read replies.
-static void *dynfilefs_init(struct fuse_conn_info *conn)
+static void *dynfilefs_init(struct fuse_conn_info *conn, struct fuse_config *config)
 {
-    conn->want|=conn->capable&(FUSE_CAP_BIG_WRITES|FUSE_CAP_SPLICE_WRITE|FUSE_CAP_SPLICE_MOVE);
+    conn->max_read=1024*1024;
+    if (conn->max_write > 1024*1024) conn->max_write=1024*1024;
+    conn->want|=conn->capable&(FUSE_CAP_SPLICE_WRITE|FUSE_CAP_SPLICE_MOVE);
     return NULL;
 }
 
@@ -359,17 +362,17 @@ static int dynfilefs_release(const char *path, struct fuse_file_info *fi)
    return 0;
 }
 
-static int dynfilefs_truncate(const char *path, off_t size)
+static int dynfilefs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
    return 0;
 }
 
-static int dynfilefs_chmod(const char *path, mode_t mode)
+static int dynfilefs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
    return 0;
 }
 
-static int dynfilefs_chown(const char *path, uid_t uid, gid_t gid)
+static int dynfilefs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
    return 0;
 }
@@ -729,7 +732,7 @@ int main(int argc, char *argv[])
     // is mounted using dynfilefs. Proper end of the process is umount, not kill.
     argv[0][0] = '@';
 
-    // Pass only the mount directory and optional debug flag to FUSE.
-    char *fuse_argv[]={argv[0], mount_dir, debug ? "-d" : NULL, NULL};
-    return fuse_main(debug ? 3 : 2, fuse_argv, &dynfilefs_oper, NULL);
+    // Allow large transfers without changing storage blocks or writeback semantics.
+    char *fuse_argv[]={argv[0], mount_dir, "-o", "max_read=1048576", debug ? "-d" : NULL, NULL};
+    return fuse_main(debug ? 5 : 4, fuse_argv, &dynfilefs_oper, NULL);
 }

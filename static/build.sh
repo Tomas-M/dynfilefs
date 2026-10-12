@@ -6,7 +6,7 @@ if [ "$(uname -s)" != Linux ]; then
     echo "Run this script on Linux (or inside WSL)." >&2
     exit 1
 fi
-for tool in make curl tar gzip xz sha256sum; do
+for tool in make curl tar gzip xz sha256sum meson ninja pkg-config; do
     command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done
 
@@ -18,7 +18,7 @@ case "$jobs" in ''|0|*[!0-9]*) echo "JOBS must be a positive integer." >&2; exit
 case "$pack" in 0|1) ;; *) echo "PACK must be 0 or 1." >&2; exit 1;; esac
 
 musl_version=1.2.6
-fuse_version=2.9.9
+fuse_version=3.18.3
 upx_version=5.2.1
 # UPX runs on the host; the compiler and target executable are always 32-bit x86.
 case "$(uname -m)" in
@@ -59,7 +59,7 @@ export PATH="$build_dir/i686-linux-musl-native/bin:$PATH"
 download "https://musl.libc.org/releases/musl-$musl_version.tar.gz" \
     d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
 download "https://github.com/libfuse/libfuse/releases/download/fuse-$fuse_version/fuse-$fuse_version.tar.gz" \
-    d0e69d5d608cc22ff4843791ad097f554dd32540ddc9bed7638cc6fea7c1b4b5
+    bcd19582c5e30f7fe45dd86a5540e998590aa01903afc7ebcbeea6c8ac5421ee
 if [ "$pack" = 1 ]; then
     download "https://github.com/upx/upx/releases/download/v$upx_version/upx-$upx_version-${upx_arch}_linux.tar.xz" "$upx_hash"
 fi
@@ -79,17 +79,17 @@ echo "Building 32-bit x86 musl $musl_version..."
 export CC="$prefix/bin/musl-gcc"
 echo "Building static libfuse $fuse_version..."
 (
-    cd "fuse-$fuse_version"
     # Keep the runtime fusermount path independent of our temporary prefix.
-    ./configure --prefix="$prefix" --bindir=/usr/bin --host=i686-linux-musl \
-        --disable-shared --enable-static --disable-util --disable-example --disable-mtab
-    make -j "$jobs"
-    make install
+    meson setup fuse-build "fuse-$fuse_version" --prefix="$prefix" --bindir=/usr/bin --libdir=lib \
+        --default-library=static --buildtype=plain -Dutils=false -Dexamples=false -Dtests=false \
+        -Ddisable-mtab=true -Ddisable-libc-symbol-version=true -Denable-io-uring=false
+    meson compile -C fuse-build -j "$jobs"
+    meson install -C fuse-build
 ) >>build.log 2>&1
 
 echo "Linking 32-bit x86 DynFileFS..."
 "$CC" $CFLAGS -std=gnu99 -D_FILE_OFFSET_BITS=64 -D_REENTRANT \
-    -I"$prefix/include/fuse" "$project_dir/dynfilefs.c" "$prefix/lib/libfuse.a" \
+    -I"$prefix/include/fuse3" "$project_dir/dynfilefs.c" "$prefix/lib/libfuse3.a" \
     $LDFLAGS -pthread -lrt -ldl -o dynfilefs >>build.log 2>&1
 strip --strip-all dynfilefs
 

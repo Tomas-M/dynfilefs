@@ -165,9 +165,28 @@ def check_old_format(binary, root):
     print('PASS: format 400 rejected without rewriting storage', flush=True)
 
 
+# Check both directions of format-500 compatibility across the optimized callbacks.
+def check_compatibility(binary, baseline, root):
+    expected=bytearray(8*1024*1024)
+    for phase, program in enumerate((baseline, binary, baseline)):
+        with mounted(program, root/'compatible', root/'compatible-mount') as path:
+            assert path.read_bytes()==expected
+            offset=phase*3*1024*1024+123
+            data=random.Random(phase).randbytes(4127)
+            fd=os.open(path, os.O_RDWR)
+            assert os.pwrite(fd, data, offset)==len(data)
+            os.fsync(fd)
+            os.close(fd)
+            expected[offset:offset+len(data)]=data
+    with mounted(binary, root/'compatible', root/'compatible-mount') as path:
+        assert path.read_bytes()==expected
+    print('PASS: format-500 compatibility in both directions', flush=True)
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('binary')
+    parser.add_argument('--baseline')
     args=parser.parse_args()
     binary=str(Path(args.binary).resolve())
     with tempfile.TemporaryDirectory(prefix='dynfilefs-test-') as folder:
@@ -177,3 +196,5 @@ if __name__=='__main__':
         check_concurrency(binary, root)
         check_loop(binary, root)
         check_old_format(binary, root)
+        if args.baseline:
+            check_compatibility(binary, str(Path(args.baseline).resolve()), root)

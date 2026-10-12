@@ -153,14 +153,34 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
 
     if (ops->read_buf)
     {
+        struct fuse_file_info info={.flags=O_RDONLY|O_DIRECT};
         struct fuse_bufvec *source;
         struct fuse_bufvec destination=FUSE_BUFVEC_INIT(sizeof(output));
         destination.buf[0].mem=output;
-        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), 0, NULL)==0);
+        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), 0, &info)==0);
+        assert(source->buf[0].flags&FUSE_BUF_IS_FD);
         assert(fuse_buf_copy(&destination, source, 0)==sizeof(output));
         assert(!memcmp(input, output, sizeof(input)));
         for (size_t i=0; i < source->count; i++)
             if (!(source->buf[i].flags&FUSE_BUF_IS_FD)) free(source->buf[i].mem);
+        free(source);
+        info.flags=O_RDONLY;
+        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), 0, &info)==0);
+        assert(!(source->buf[0].flags&FUSE_BUF_IS_FD));
+        assert(!memcmp(input, source->buf[0].mem, sizeof(input)));
+        free(source->buf[0].mem);
+        free(source);
+        info.flags=O_RDONLY|O_DIRECT;
+        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), split_size-512, &info)==0);
+        assert(!(source->buf[0].flags&FUSE_BUF_IS_FD));
+        destination=FUSE_BUFVEC_INIT(sizeof(output));
+        destination.buf[0].mem=output;
+        assert(fuse_buf_copy(&destination, source, 0)==sizeof(output));
+        for (int i=0; i < sizeof(output); i++) assert(output[i]==(i>=512 && i<1024 ? 2 : 0));
+        free(source->buf[0].mem);
+        free(source);
+        assert(ops->read_buf(dynfilefs_path, &source, 4096, virtual_size, &info)==0);
+        assert(fuse_buf_size(source)==0);
         free(source);
     }
     ops->destroy(NULL);

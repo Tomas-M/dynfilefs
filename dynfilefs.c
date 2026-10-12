@@ -136,10 +136,10 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
 }
 
 
-// Negotiate multi-page writes without changing the storage block size.
+// Negotiate large writes and descriptor-backed read replies.
 static void *dynfilefs_init(struct fuse_conn_info *conn)
 {
-    conn->want|=conn->capable&FUSE_CAP_BIG_WRITES;
+    conn->want|=conn->capable&(FUSE_CAP_BIG_WRITES|FUSE_CAP_SPLICE_WRITE|FUSE_CAP_SPLICE_MOVE);
     return NULL;
 }
 
@@ -297,6 +297,52 @@ static int dynfilefs_write(const char *path, const char *buf, size_t size, off_t
     return tot;
 }
 
+// Splice large direct reads; buffered loop reads, holes and partial tails use pread.
+static int dynfilefs_read_buf(const char *path, struct fuse_bufvec **bufp, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+    if (offset < 0) return -EINVAL;
+    if (offset >= virtual_size) size=0;
+    else if (size > virtual_size-offset) size=virtual_size-offset;
+    struct fuse_bufvec *buffer=malloc(sizeof(*buffer));
+    if (!buffer) return -ENOMEM;
+    *buffer=FUSE_BUFVEC_INIT(size);
+    if (size > 2*DATA_BLOCK_SIZE && (fi->flags&O_DIRECT))
+    {
+        int ix=offset/split_size;
+        pthread_mutex_lock(&storage_locks[ix]);
+        off_t target=get_data_offset(offset);
+        off_t position=target+offset%DATA_BLOCK_SIZE;
+        int complete=target && get_data_size(offset, size, target)==size;
+        if (complete && position+size > last_block_offsets[ix])
+        {
+            struct stat st;
+            if (fstat(fileno(files[ix]), &st))
+            {
+                free(buffer);
+                return with_unlock(ix, -errno);
+            }
+            complete=position+size <= st.st_size;
+        }
+        if (complete)
+        {
+            buffer->buf[0].flags=FUSE_BUF_IS_FD|FUSE_BUF_FD_SEEK|FUSE_BUF_FD_RETRY;
+            buffer->buf[0].fd=fileno(files[ix]);
+            buffer->buf[0].pos=position;
+        }
+        pthread_mutex_unlock(&storage_locks[ix]);
+    }
+    if (size && !(buffer->buf[0].flags&FUSE_BUF_IS_FD))
+    {
+        buffer->buf[0].mem=malloc(size);
+        if (!buffer->buf[0].mem) { free(buffer); return -ENOMEM; }
+        int result=dynfilefs_read(path, buffer->buf[0].mem, size, offset, fi);
+        if (result < 0) { free(buffer->buf[0].mem); free(buffer); return result; }
+        buffer->buf[0].size=result;
+    }
+    *bufp=buffer;
+    return 0;
+}
+
 static void dynfilefs_destroy(void *fi)
 {
    int error=dynfilefs_fsync(dynfilefs_path, 0, NULL);
@@ -336,6 +382,7 @@ static struct fuse_operations dynfilefs_oper = {
 	.open		= dynfilefs_open,
 	.read		= dynfilefs_read,
 	.write		= dynfilefs_write,
+	.read_buf       = dynfilefs_read_buf,
 	.fsync		= dynfilefs_fsync,
 	.flush		= dynfilefs_flush,
 	.release	= dynfilefs_release,

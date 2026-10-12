@@ -55,6 +55,8 @@ Usage in fstab
 ```
 How to compile:
 
+Requires libfuse 2.9.x development headers.
+
     ./autogen.sh
     ./configure
     make

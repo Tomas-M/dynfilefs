@@ -13,13 +13,13 @@ import time
 
 # Keep each benchmark's backing files in its selected filesystem.
 @contextlib.contextmanager
-def mounted(binary, root, trace=None, summary=True):
+def mounted(binary, root, trace=None):
     mount=root/'mount'
     mount.mkdir()
     command=[binary, '-f', str(root/'storage'), '-m', str(mount), '-s', '512', '-p', '32']
     traced=None
     if trace:
-        traced=subprocess.Popen(['strace', '-f', *(['-c'] if summary else []), '-e', 'trace=pread64,pwrite64,preadv,pwritev,preadv2,pwritev2,fsync,msync,splice,fallocate', '-o', str(trace), *command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        traced=subprocess.Popen(['strace', '-f', '-c', '-e', 'trace=pread64,pwrite64,preadv,pwritev,preadv2,pwritev2,fsync,msync,splice', '-o', str(trace), *command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         subprocess.run(command, check=True)
     for _ in range(200):

@@ -138,7 +138,7 @@ logic is unchanged throughout this comparison; preallocation is absent.
 
 All three benchmark binaries were rebuilt with their `static/build.sh`, using
 the same pinned GCC 11.2.1 20211120 compiler, musl 1.2.6, optimization flags and
-UPX 5.2.1. The final shipped binary is the measured 32-bit static build.
+UPX 5.2.1. The trial's 512 KiB binary is the measured 32-bit static build.
 The VM used Debian 13, kernel 7.2.9-slax, 16 vCPUs and 18 GiB configured RAM
 (18425100 KiB usable). The FAT32 image was on ext4; copy inputs and the direct-I/O
 microbenchmark's backing files were on tmpfs.
@@ -197,3 +197,11 @@ The updated static build script and ordinary autogen/configure/make build passed
 [fuse3-results.json](fuse3-results.json) records binary hashes, source commits,
 all samples, FAT checks, traces and the measurement limitations. Earlier FAT
 runs affected by HostMemoryLow or cgroup throttling were excluded.
+
+After this trial, the current implementation returned to 4 KiB blocks and the
+original format-500 index layout, retaining libfuse 3 and transfers up to 1 MiB.
+Version 5.01 accepts version-5.00 storage and rejects formats 400 and 501.
+The 512 KiB measurements above remain a record of the discarded experiment.
+The rebuilt static i686 binary passed callback fault/concurrency tests,
+integration/remount tests and format-500 interoperability in both directions.
+The spaced-write FAT32 fixture again used 5.41 MiB and passed persistence and fsck checks.

@@ -148,10 +148,10 @@ def check_loop(binary, root):
     print('PASS: loop-mounted ext4, file fsync and remount', flush=True)
 
 
-# Reject older formats in either header before changing storage contents.
+# Reject incompatible formats in either header before changing storage contents.
 def check_old_format(binary, root):
-    for version in (400, 500):
-        for main_version in (version, 501):
+    for version in (400, 501):
+        for main_version in (version, 500):
             storage=root/f'old-{version}-{main_version}'
             header=bytearray(4096)
             struct.pack_into('<qqq', header, 2048, main_version, 3*1024*1024, 8*1024*1024)
@@ -164,7 +164,7 @@ def check_old_format(binary, root):
             result=subprocess.run([binary, '-f', str(storage), '-m', str(root/'mount')], capture_output=True)
             assert result.returncode!=0 and f'incompatible data format version {version}'.encode() in result.stdout
             assert before==(storage.read_bytes(), split.read_bytes())
-    print('PASS: formats 400 and 500 rejected without rewriting storage', flush=True)
+    print('PASS: formats 400 and 501 rejected without rewriting storage', flush=True)
 
 
 # Check both directions across builds supporting the same storage format.

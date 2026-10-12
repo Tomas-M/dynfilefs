@@ -85,11 +85,11 @@ verification. The previous binary is replaced only after all checks pass.
 
 Master branch is work in progress, may be broken. See releases for "stable" versions.
 Latest version is 5.01 (2026).
-Version 5.01 uses storage format `501` with 512 KiB data blocks and refuses older storage formats.
-Each part has a 4 KiB header and an index padded so data starts at a 512 KiB boundary.
-Small writes to different blocks can consume much more backing space on FAT32,
-which cannot leave sparse gaps between appended blocks. All-zero writes to unallocated
-blocks still consume no data space; writes within an existing block update only the requested bytes.
+Version 5.01 uses storage format `500` with 4 KiB data blocks, compatible with version 5.00 storage.
+Format `400` and the experimental 512 KiB format `501` are refused.
+Each part has a 4 KiB header and an 8-byte index entry per data block (about 0.2% overhead).
+The 512 KiB experiment was removed because its small-write space amplification on FAT32
+outweighed the measured benefit. libfuse 3 and transfers up to 1 MiB are retained.
 To migrate data, mount old and new storage with their respective versions and copy the data between them.
 Changing the version number in an old storage header is not sufficient.
 Releases can be found here: https://github.com/Tomas-M/dynfilefs/releases

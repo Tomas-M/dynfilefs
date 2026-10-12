@@ -29,7 +29,7 @@
 
 #define MAX_SPLIT_FILES 9999
 #define HEADER_SIZE 4096
-#define DATA_BLOCK_SIZE (512*1024)
+#define DATA_BLOCK_SIZE 4096
 
 char *dynfilefs_path = "/virtual.dat";
 char *storage_file = "";
@@ -42,7 +42,7 @@ off_t size_MB = 0;
 off_t split_size_MB = 0;
 off_t increase_size_MB = 0;
 
-off_t format_version=501;
+off_t format_version=500;
 off_t virtual_size = 0;
 off_t split_size = 0;
 off_t header_size = HEADER_SIZE;
@@ -456,7 +456,7 @@ static void usage(char * cmd)
        printf("  # mke2fs -F /mnt/virtual.dat\n");
        printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("Each 512 KiB data block uses an 8-byte index entry. Each part's data starts on a 512 KiB boundary.\n");
+       printf("Each 4 KiB data block uses an 8-byte index entry (about 0.2%% overhead).\n");
        printf("\n");
 }
 
@@ -502,9 +502,7 @@ static int validate_storage_sizes(void)
         return 0;
     }
     max_files=(virtual_size-1)/split_size+1;
-    // Pad the index so appended blocks stay aligned to the storage allocation size.
-    off_t index_size=split_size/DATA_BLOCK_SIZE*sizeof(off_t);
-    offset_block_size=(header_size+index_size+DATA_BLOCK_SIZE-1)/DATA_BLOCK_SIZE*DATA_BLOCK_SIZE-header_size;
+    offset_block_size=split_size/DATA_BLOCK_SIZE*sizeof(off_t);
     if (offset_block_size > SIZE_MAX-header_size) return 0;
     return 1;
 }

@@ -39,6 +39,7 @@ def check_storage(binary, root):
         os.fsync(fd)
         assert (root/'storage.0').stat().st_size==initial, 'Zero write allocated storage'
         operations=[(0, 1), (4095, 8193), (3*1024*1024-111, 131072), (len(expected)-512, 512)]
+        operations.append((512*1024-1, 1024*1024+3))
         operations += [(rng.randrange(len(expected)-131072), rng.choice([31, 512, 4096, 65536, 131072])) for _ in range(80)]
         for offset, size in operations:
             data=rng.randbytes(size)
@@ -77,7 +78,7 @@ def check_storage(binary, root):
 # An indexed partial tail must read as zeros beyond the backing file's EOF.
 def check_partial_tail(binary, root):
     expected=bytearray(1024*1024)
-    for offset, data in ((0, b'A'*17), (4096, b'B'*31)):
+    for offset, data in ((0, b'A'*17), (4096, b'B'*31), (512*1024+17, b'C'*31)):
         with mounted(binary, root/'tail', root/'tail-mount', 1, 1) as path:
             fd=os.open(path, os.O_RDWR)
             assert os.pwrite(fd, data, offset)==len(data)
@@ -147,25 +148,26 @@ def check_loop(binary, root):
     print('PASS: loop-mounted ext4, file fsync and remount', flush=True)
 
 
-# Reject the old format before changing either storage file's contents.
+# Reject older formats in either header before changing storage contents.
 def check_old_format(binary, root):
-    for main_version in (400, 500):
-        storage=root/('old-'+str(main_version))
-        header=bytearray(4096)
-        struct.pack_into('<qqq', header, 2048, main_version, 3*1024*1024, 8*1024*1024)
-        storage.write_bytes(header)
-        split=Path(str(storage)+'.0')
-        old=bytearray(header)
-        struct.pack_into('<q', old, 2048, 400)
-        split.write_bytes(old+bytes(6144))
-        before=storage.read_bytes(), split.read_bytes()
-        result=subprocess.run([binary, '-f', str(storage), '-m', str(root/'mount')], capture_output=True)
-        assert result.returncode!=0 and b'incompatible data format version 400' in result.stdout
-        assert before==(storage.read_bytes(), split.read_bytes())
-    print('PASS: format 400 rejected without rewriting storage', flush=True)
+    for version in (400, 500):
+        for main_version in (version, 501):
+            storage=root/f'old-{version}-{main_version}'
+            header=bytearray(4096)
+            struct.pack_into('<qqq', header, 2048, main_version, 3*1024*1024, 8*1024*1024)
+            storage.write_bytes(header)
+            split=Path(str(storage)+'.0')
+            old=bytearray(header)
+            struct.pack_into('<q', old, 2048, version)
+            split.write_bytes(old+bytes(6144))
+            before=storage.read_bytes(), split.read_bytes()
+            result=subprocess.run([binary, '-f', str(storage), '-m', str(root/'mount')], capture_output=True)
+            assert result.returncode!=0 and f'incompatible data format version {version}'.encode() in result.stdout
+            assert before==(storage.read_bytes(), split.read_bytes())
+    print('PASS: formats 400 and 500 rejected without rewriting storage', flush=True)
 
 
-# Check both directions of format-500 compatibility across the optimized callbacks.
+# Check both directions across builds supporting the same storage format.
 def check_compatibility(binary, baseline, root):
     expected=bytearray(8*1024*1024)
     for phase, program in enumerate((baseline, binary, baseline)):
@@ -180,7 +182,7 @@ def check_compatibility(binary, baseline, root):
             expected[offset:offset+len(data)]=data
     with mounted(binary, root/'compatible', root/'compatible-mount') as path:
         assert path.read_bytes()==expected
-    print('PASS: format-500 compatibility in both directions', flush=True)
+    print('PASS: storage compatibility in both directions', flush=True)
 
 
 if __name__=='__main__':

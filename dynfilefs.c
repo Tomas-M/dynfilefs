@@ -28,23 +28,24 @@
 #include <limits.h>
 
 #define MAX_SPLIT_FILES 9999
-#define DATA_BLOCK_SIZE 4096
+#define HEADER_SIZE 4096
+#define DATA_BLOCK_SIZE (512*1024)
 
 char *dynfilefs_path = "/virtual.dat";
 char *storage_file = "";
 char *mount_dir = "";
-char *banner = "DynfilefsFS 5.00 (c) 2026 Tomas M <www.slax.org>";
-char header[DATA_BLOCK_SIZE] = {};
+char *banner = "DynfilefsFS 5.01 (c) 2026 Tomas M <www.slax.org>";
+char header[HEADER_SIZE] = {};
 char empty[DATA_BLOCK_SIZE] = {};
 
 off_t size_MB = 0;
 off_t split_size_MB = 0;
 off_t increase_size_MB = 0;
 
-off_t format_version=500;
+off_t format_version=501;
 off_t virtual_size = 0;
 off_t split_size = 0;
-off_t header_size = DATA_BLOCK_SIZE;
+off_t header_size = HEADER_SIZE;
 off_t offset_block_size = 0;
 
 int max_files = 1;
@@ -58,7 +59,7 @@ struct metaStruct
 
 
 int debug=0;
-int meta_header_offset = DATA_BLOCK_SIZE / 2;
+int meta_header_offset = HEADER_SIZE / 2;
 
 pthread_mutex_t storage_locks[MAX_SPLIT_FILES];
 FILE * mainfile;
@@ -309,7 +310,8 @@ static int dynfilefs_read_buf(const char *path, struct fuse_bufvec **bufp, size_
     struct fuse_bufvec *buffer=malloc(sizeof(*buffer));
     if (!buffer) return -ENOMEM;
     *buffer=FUSE_BUFVEC_INIT(size);
-    if (size > 2*DATA_BLOCK_SIZE && (fi->flags&O_DIRECT))
+    // Keep the splice cutoff independent of the storage allocation size.
+    if (size > 8192 && (fi->flags&O_DIRECT))
     {
         int ix=offset/split_size;
         pthread_mutex_lock(&storage_locks[ix]);
@@ -454,7 +456,7 @@ static void usage(char * cmd)
        printf("  # mke2fs -F /mnt/virtual.dat\n");
        printf("  # mount -o loop /mnt/virtual.dat /mnt\n");
        printf("\n");
-       printf("The [storage_file] has about 2 MB overhead for each 1GB of data (that is 0.2%%)\n");
+       printf("Each 512 KiB data block uses an 8-byte index entry. Each part's data starts on a 512 KiB boundary.\n");
        printf("\n");
 }
 
@@ -500,7 +502,9 @@ static int validate_storage_sizes(void)
         return 0;
     }
     max_files=(virtual_size-1)/split_size+1;
-    offset_block_size=split_size/DATA_BLOCK_SIZE*sizeof(off_t);
+    // Pad the index so appended blocks stay aligned to the storage allocation size.
+    off_t index_size=split_size/DATA_BLOCK_SIZE*sizeof(off_t);
+    offset_block_size=(header_size+index_size+DATA_BLOCK_SIZE-1)/DATA_BLOCK_SIZE*DATA_BLOCK_SIZE-header_size;
     if (offset_block_size > SIZE_MAX-header_size) return 0;
     return 1;
 }

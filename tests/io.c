@@ -55,7 +55,7 @@ static void *overwrite_until_sync(void *data)
     memset(bytes, args->worker+1, sizeof(bytes));
     pthread_barrier_wait(args->barrier);
     while (!__atomic_load_n(&stop_writes, __ATOMIC_RELAXED))
-        assert(args->ops->write(dynfilefs_path, bytes, sizeof(bytes), 65536+args->worker*512, NULL)==sizeof(bytes));
+        assert(args->ops->write(dynfilefs_path, bytes, sizeof(bytes), args->offset+args->worker*512, NULL)==sizeof(bytes));
     return NULL;
 }
 
@@ -113,13 +113,13 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
     pthread_barrier_init(&barrier, NULL, 8);
     for (int i=0; i < 8; i++)
     {
-        args[i]=(struct writer_args){ops, &barrier, i, 65536};
+        args[i]=(struct writer_args){ops, &barrier, i, 3*DATA_BLOCK_SIZE};
         assert(!pthread_create(&threads[i], NULL, write_partial_block, &args[i]));
     }
     for (int i=0; i < 8; i++) pthread_join(threads[i], NULL);
     pthread_barrier_destroy(&barrier);
-    assert(ops->read(dynfilefs_path, output, DATA_BLOCK_SIZE, 65536, NULL)==DATA_BLOCK_SIZE);
-    for (int i=0; i < DATA_BLOCK_SIZE; i++) assert(output[i]==i/512+1);
+    assert(ops->read(dynfilefs_path, output, DATA_BLOCK_SIZE, 3*DATA_BLOCK_SIZE, NULL)==DATA_BLOCK_SIZE);
+    for (int i=0; i < DATA_BLOCK_SIZE; i++) assert(output[i]==(i<4096 ? i/512+1 : 0));
 
     fail_sync=1;
     assert(ops->fsync(dynfilefs_path, 0, NULL)==-EIO);
@@ -144,7 +144,7 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
     // Distinct split files must actually execute their backing writes concurrently.
     pthread_barrier_init(&barrier, NULL, 2);
     concurrent_writes=1;
-    args[0].offset=131072;
+    args[0].offset=4*DATA_BLOCK_SIZE;
     args[1].offset=split_size-512;
     for (int i=0; i < 2; i++) assert(!pthread_create(&threads[i], NULL, write_partial_block, &args[i]));
     for (int i=0; i < 2; i++) pthread_join(threads[i], NULL);
@@ -156,28 +156,29 @@ int test_fuse_main_real(int argc, char **argv, const struct fuse_operations *ops
     {
         struct fuse_file_info info={.flags=O_RDONLY|O_DIRECT};
         struct fuse_bufvec *source;
-        struct fuse_bufvec destination=FUSE_BUFVEC_INIT(sizeof(output));
+        size_t transfer=3*4096;
+        struct fuse_bufvec destination=FUSE_BUFVEC_INIT(transfer);
         destination.buf[0].mem=output;
-        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), 0, &info)==0);
+        assert(ops->read_buf(dynfilefs_path, &source, transfer, 0, &info)==0);
         assert(source->buf[0].flags&FUSE_BUF_IS_FD);
-        assert(fuse_buf_copy(&destination, source, 0)==sizeof(output));
-        assert(!memcmp(input, output, sizeof(input)));
+        assert(fuse_buf_copy(&destination, source, 0)==transfer);
+        assert(!memcmp(input, output, transfer));
         for (size_t i=0; i < source->count; i++)
             if (!(source->buf[i].flags&FUSE_BUF_IS_FD)) free(source->buf[i].mem);
         free(source);
         info.flags=O_RDONLY;
-        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), 0, &info)==0);
+        assert(ops->read_buf(dynfilefs_path, &source, transfer, 0, &info)==0);
         assert(!(source->buf[0].flags&FUSE_BUF_IS_FD));
-        assert(!memcmp(input, source->buf[0].mem, sizeof(input)));
+        assert(!memcmp(input, source->buf[0].mem, transfer));
         free(source->buf[0].mem);
         free(source);
         info.flags=O_RDONLY|O_DIRECT;
-        assert(ops->read_buf(dynfilefs_path, &source, sizeof(output), split_size-512, &info)==0);
+        assert(ops->read_buf(dynfilefs_path, &source, transfer, split_size-512, &info)==0);
         assert(!(source->buf[0].flags&FUSE_BUF_IS_FD));
-        destination=FUSE_BUFVEC_INIT(sizeof(output));
+        destination=FUSE_BUFVEC_INIT(transfer);
         destination.buf[0].mem=output;
-        assert(fuse_buf_copy(&destination, source, 0)==sizeof(output));
-        for (int i=0; i < sizeof(output); i++) assert(output[i]==(i>=512 && i<1024 ? 2 : 0));
+        assert(fuse_buf_copy(&destination, source, 0)==transfer);
+        for (int i=0; i < transfer; i++) assert(output[i]==(i>=512 && i<1024 ? 2 : 0));
         free(source->buf[0].mem);
         free(source);
         assert(ops->read_buf(dynfilefs_path, &source, 4096, virtual_size, &info)==0);

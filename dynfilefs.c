@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -189,6 +190,7 @@ static void usage(const char *program)
     printf("DynFileFS 6.00 (storage format %d)\n\n", DYN_FORMAT);
     printf("usage: %s -f storage_file -m mount_dir [-s size_MB] [-p split_MB] [-d] [--norollback]\n", program);
     printf("       %s -o size=size_MB,split=split_MB storage_file mount_dir\n", program);
+    printf("       %s -i -f storage_file\n", program);
     printf("\n");
     printf("  -f, --file PATH       Storage metadata file; data parts use .0, .1, ...\n");
     printf("  -m, --mountdir PATH   Empty mount directory containing virtual.dat and rollback.\n");
@@ -197,6 +199,7 @@ static void usage(const char *program)
     printf("  -p, --split MiB       Maximum physical size of each part, including indexes.\n");
     printf("                       Defaults to 4088 MiB and is retained for existing storage.\n");
     printf("  -d                   Stay in the foreground and enable FUSE debugging.\n");
+    printf("  -i, --info           Print saved storage metadata as key:value lines; no mount or changes.\n");
     printf("  --norollback         Skip a pending rollback for this mount; keep its flag enabled.\n");
     printf("                       Also available as -o norollback.\n");
     printf("\nFormat-500 storage is converted automatically on its first mount.\n");
@@ -222,12 +225,18 @@ static uint64_t parse_size(const char *value)
     return (uint64_t)size*1024*1024;
 }
 
+// Keep byte counts exact and report only complete MiB for shell arithmetic.
+static void print_size(const char *name, uint64_t bytes)
+{
+    printf("%s:%" PRIu64 "\n%sMiB:%" PRIu64 "\n", name, bytes, name, bytes/1048576);
+}
+
 // Parse mount and fstab options.
 int main(int argc, char **argv)
 {
     const char *file="", *mount="";
     uint64_t size=0, increase=0, split=0;
-    int debug=0, norollback=0, option;
+    int debug=0, norollback=0, info=0, mount_options=0, option;
     static const struct option options[]={
         {"options", required_argument, NULL, 'o'},
         {"file", required_argument, NULL, 'f'},
@@ -235,12 +244,14 @@ int main(int argc, char **argv)
         {"size", required_argument, NULL, 's'},
         {"split", required_argument, NULL, 'p'},
         {"debug", no_argument, NULL, 'd'},
+        {"info", no_argument, NULL, 'i'},
         {"norollback", no_argument, NULL, 'n'},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0},
     };
-    while ((option=getopt_long(argc, argv, "f:m:s:p:o:dh", options, NULL)) != -1)
+    while ((option=getopt_long(argc, argv, "f:m:s:p:o:dih", options, NULL)) != -1)
     {
+        if (strchr("mspodn", option)) mount_options=1;
         switch (option)
         {
             case 'f': file=optarg; break;
@@ -248,6 +259,7 @@ int main(int argc, char **argv)
             case 's': size=parse_size(optarg); increase=optarg[0]=='+' ? size : 0; break;
             case 'p': split=parse_size(optarg); break;
             case 'd': debug=1; break;
+            case 'i': info=1; break;
             case 'n': norollback=1; break;
             case 'h': usage(argv[0]); return 0;
             case 'o':
@@ -265,10 +277,27 @@ int main(int argc, char **argv)
                 }
                 break;
             }
-            default: usage(argv[0]); return 1;
+            default: fprintf(stderr, "Try '%s --help' for usage.\n", argv[0]); return 1;
         }
     }
     if (!*file && optind < argc) file=argv[optind++];
+    if (info)
+    {
+        int invalid_path=!*file || *mount || optind!=argc;
+        if (invalid_path || mount_options)
+        {
+            fprintf(stderr, "Usage: %s -i -f storage_file (without mount options)\n", argv[0]);
+            return 1;
+        }
+        struct storage_info saved;
+        int error=storage_inspect(file, &saved);
+        if (error) { fprintf(stderr, "Cannot inspect storage: %s\n", strerror(-error)); return 1; }
+        printf("version:%" PRIu64 "\n", saved.version);
+        print_size("size", saved.size);
+        print_size("split", saved.split);
+        printf("blockSize:%d\nrollback:%d\n", DYN_BLOCK_SIZE, saved.rollback);
+        return fflush(stdout)==EOF;
+    }
     if (!*mount && optind < argc) mount=argv[optind++];
     if (!*file || !*mount || optind != argc) { usage(argv[0]); return 1; }
     int error=storage_open(&disk, file, size, increase, split, norollback);

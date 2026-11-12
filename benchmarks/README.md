@@ -4,6 +4,7 @@ Run on Linux as root with libfuse 3.8+, Python 3.11+, fio, strace and e2fsprogs 
 
 ```sh
 python3 tests/integration.py /absolute/path/to/dynfilefs
+python3 tests/info.py /absolute/path/to/dynfilefs
 python3 benchmarks/run.py /absolute/path/to/dynfilefs results.json --directory /path/on/test/filesystem --trace
 ```
 

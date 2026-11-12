@@ -12,6 +12,13 @@
 
 struct storage;
 
+struct storage_info
+{
+    uint64_t version, size, split;
+    int rollback;
+};
+
+int storage_inspect(const char *path, struct storage_info *info);
 int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, int norollback);
 void storage_close(struct storage *storage);
 uint64_t storage_size(struct storage *storage);

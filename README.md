@@ -16,7 +16,18 @@ dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--noro
 - `-p`: maximum data-part size, including indexes. Defaults to 4088 MiB for FAT32;
   existing storage keeps its original setting.
 - `-d`: foreground debug mode. See `--help` for details.
+- `-i`, `--info`: inspect existing storage without mounting or changing it.
 - `--norollback` or `-o norollback`: continue a session with pending rollback for this mount.
+
+```sh
+dynfilefs -i -f /var/lib/changes.dat
+```
+
+Prints `key:value` lines: `version`, `size`, `sizeMiB`, `split`, `splitMiB`,
+`blockSize`, `rollback` (0 or 1). Sizes without `MiB` are exact bytes; MiB values
+are integers rounded down. Works with formats 500 and 600, also while mounted. Reports the
+latest saved metadata, including the log; unsynced growth is not yet visible.
+Errors go to stderr with a nonzero exit status. Inspection does not perform rollback.
 
 Create a new 1 GiB disk:
 

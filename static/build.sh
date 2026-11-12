@@ -90,7 +90,7 @@ echo "Building static libfuse $fuse_version..."
 echo "Linking 32-bit x86 DynFileFS..."
 "$CC" $CFLAGS -std=gnu99 -D_FILE_OFFSET_BITS=64 -D_REENTRANT \
     -I"$prefix/include/fuse3" "$project_dir/dynfilefs.c" "$project_dir/storage.c" \
-    "$project_dir/format.c" "$project_dir/bitmap.c" "$project_dir/journal.c" "$project_dir/migration.c" "$prefix/lib/libfuse3.a" \
+    "$project_dir/format.c" "$project_dir/bitmap.c" "$project_dir/journal.c" "$project_dir/migration.c" "$project_dir/info.c" "$prefix/lib/libfuse3.a" \
     $LDFLAGS -pthread -lrt -ldl -o dynfilefs >>build.log 2>&1
 strip --strip-all dynfilefs
 

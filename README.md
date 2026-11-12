@@ -1,95 +1,110 @@
 # dynfilefs
-Fuse filesystem for dynamically-enlarged file (can be mounted as loop device too)
 
-usage: ./dynfilefs -f storage_file -m mount_dir [ -s size_MB ] [ -p split_size_MB ] [ -d ]
+FUSE filesystem exposing a virtual disk as `virtual.dat`. Backing files grow as data
+is written and can be split to fit FAT32.
 
-Mount filesystem to [mount_dir], provide a virtual file [mount_dir]/virtual.dat of size [size_MB]
-All changes made to virtual.dat file are stored to [storage_file] file(s)
-```
-  -d                       - Debug mode; do not fork to background
+## Usage
 
-  --file [storage_file]
-  [storage_file]
-  -f [storage_file]        - Path to the file where changes to the virtual file will be stored.
-                           - The storage file is created with the provided name to store metadata,
-                             and then additional storage files are created with the same base name
-                             with extension suffixes such as .0, .1, .2, etc.
-                           - If the storage exists, it will be reused.
-
-  --mountdir [mount_dir]
-  [mount_dir]
-  -m [mount_dir]           - Specifies the directory where the filesystem will be mounted.
-                           - The directory must be empty, or the mount operation will be refused.
-
-  --size [size_MB]
-  -o size=[size_MB]
-  -s [size_MB]             - Sets the size of the virtual.dat file in MB.
-                           - If storage file exists, you can specify bigger size_MB than before,
-                             in that case the size of virtual file will be enlarged.
-                           - If the specified size_MB is smaller than before, it will be ignored
-                             and the previous stored value of size_MB will be reused.
-                           - If the size is specified as +size_MB (note the plus sign prefix),
-                             then the virtual file will grow by size_MB if storage_file exists.
-
-  --split [split_size_MB]
-  -o split=[split_size_MB]
-  -p [split_size_MB ]      - Sets the maximum data size per storage file. Multiple files
-                             will be created if [size_MB] > [split_size_MB].
-                             Beware that actual file size (including internal indexes) may be
-                             bigger than split_size_MB, so use max 4088 on FAT32 to be safe,
-                             because FAT32 does not support individual files bigger than 4GB.
-                           - This parameter is ignored if storage file exists,
-                             in that case the previous stored value is reused.
+```sh
+dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--norollback]
 ```
 
-Example usage:
+- `-f`: backing metadata file; data parts use `.0`, `.1`, etc.
+- `-m`: empty mount directory.
+- `-s`: virtual size, required for new storage. Larger values grow existing storage;
+  `+N` adds N MiB. Smaller sizes are ignored.
+- `-p`: maximum data-part size, including indexes. Defaults to 4088 MiB for FAT32;
+  existing storage keeps its original setting.
+- `-d`: foreground debug mode. See `--help` for details.
+- `--norollback` or `-o norollback`: continue a session with pending rollback for this mount.
 
-    ./dynfilefs -f /tmp/changes.dat -s 1024 -m /mnt
-    mke2fs -F /mnt/virtual.dat
-    mount -o loop /mnt/virtual.dat /mnt
+Create a new 1 GiB disk:
 
-Usage in fstab
+```sh
+mkdir -p /mnt/changes /mnt/data
+dynfilefs -f /var/lib/changes.dat -m /mnt/changes -s 1024
+mke2fs -F /mnt/changes/virtual.dat   # Format only when creating a new disk.
+mount -o loop /mnt/changes/virtual.dat /mnt/data
 ```
-  /var/lib/changes.dat /var/lib/changes dynfilefs size=1024,split=1000 0 0
-  /var/lib/changes/virtual.dat /extra auto loop 0 0 
+
+To reuse it, run the mount commands without formatting. Unmount the inner filesystem first:
+
+```sh
+umount /mnt/data
+umount /mnt/changes
 ```
-How to compile:
 
-Requires libfuse 3.8+ development headers and pkg-config. FUSE requests can carry
-up to 1 MiB; the kernel may negotiate a smaller limit.
-Performance measurements and reproducible workloads are in [benchmarks/README.md](benchmarks/README.md).
+Equivalent `/etc/fstab` entries:
 
-    ./autogen.sh
-    ./configure
-    make
+```fstab
+/var/lib/changes.dat /mnt/changes dynfilefs size=1024,split=4088 0 0
+/mnt/changes/virtual.dat /mnt/data auto loop 0 0
+```
 
+With `-f /var/lib/changes.dat`, files in `/var/lib` can include:
 
-How to compile statically:
+```text
+changes.dat           Metadata
+changes.dat.0         Data and index pages, up to the configured split size
+changes.dat.1         Further parts, created as needed
+changes.dat.lock      Mount lock; removed after clean unmount
+changes.dat.log       Metadata log, up to 32 MiB
+changes.dat.work      Compacted checkpoint
+changes.dat.rollback  Saved rollback request
+changes.dat.next      Temporary metadata being written
+changes.dat.migrate   Temporary conversion marker
+```
 
-    sh static/build.sh
+Only needed files are created. Without a pending rollback, clean unmount leaves only
+the metadata file and numbered data parts, reclaiming unused tails and empty parts.
+Pending rollback or crash-recovery files remain until the next mount; keep them together
+with the backing file.
 
-The script builds a fully static 32-bit x86 (i686) binary at `static/dynfilefs`
-on an x86 or x86-64 Linux host that can run 32-bit executables. It downloads a
-standalone compiler, builds musl and libfuse with verified SHA-256 checksums,
-and packs the result with UPX. No Buildroot, root access or host multilib is needed.
-Required tools: make, curl, tar, gzip, xz, meson, ninja, pkg-config and standard shell utilities.
+## Rollback
 
-Use `JOBS=2 sh static/build.sh` to limit parallel builds, or `PACK=0 sh static/build.sh`
-to skip compression. Archives placed in `static/sources/` are reused after checksum
-verification. The previous binary is replaced only after all checks pass.
+```sh
+echo 1 > /mnt/changes/rollback  # Discard this entire session at the next mount.
+echo 0 > /mnt/changes/rollback  # Cancel the request.
+cat /mnt/changes/rollback      # Read the current flag.
+```
 
+The flag is saved immediately. Rollback includes all writes during the current mount;
+the mounted view stays usable. With rollback enabled, clean unmount saves the current
+state and leaves the request and recovery files for the next mount. A normal next mount
+restores the original state, reclaims unused space and resets the flag to `0`.
+Without rollback, clean unmount keeps all changes; a crash recovers the last successful `fsync`.
 
+Use `--norollback` to continue the saved state instead. The flag stays `1`, and the
+original rollback point survives any number of continued mounts. A later mount without
+the option discards changes from all those sessions. Writing `0` cancels the request;
+the next clean unmount commits their combined state. With no pending request, the option
+does nothing. After a crash, continuation recovers the last successful `fsync`.
 
-# WARNING!
+## Existing storage
 
+Format 500 converts automatically on its first mount, without moving payload data.
+Legacy split sizes must be an even number of MiB. The resulting format 600 cannot be
+opened by older versions.
 
-Master branch is work in progress, may be broken. See releases for "stable" versions.
-Latest version is 5.01 (2026).
-Version 5.01 uses storage format `500` with 4 KiB data blocks, compatible with version 5.00 storage.
-Format `400` and the experimental 512 KiB format `501` are refused.
-Each part has a 4 KiB header and an 8-byte index entry per data block (about 0.2% overhead).
-The 512 KiB experiment was removed because its small-write space amplification on FAT32
-outweighed the measured benefit. libfuse 3 and transfers up to 1 MiB are retained.
-To migrate data, mount old and new storage with their respective versions and copy the data between them.
-Changing the version number in an old storage header is not sufficient.
-Releases can be found here: https://github.com/Tomas-M/dynfilefs/releases
+## Build
+
+Requires libfuse 3.8+ development headers, pkg-config and autotools:
+
+```sh
+./autogen.sh
+./configure
+make
+```
+
+For a static Linux i686 binary at `static/dynfilefs`:
+
+```sh
+sh static/build.sh
+```
+
+The static build requires an x86 Linux host, make, curl, tar, gzip, xz, sha256sum,
+meson, ninja and pkg-config. `JOBS=2` limits parallel builds; `PACK=0` skips UPX.
+
+[Tests and benchmarks](benchmarks/README.md) · [Stable releases](https://github.com/Tomas-M/dynfilefs/releases)
+
+Development version: 6.00, storage format 600.

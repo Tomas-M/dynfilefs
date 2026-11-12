@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,14 @@ def mounted(binary, root, trace=None):
         yield mount/'virtual.dat', pid
     finally:
         subprocess.run(['umount', str(mount)], check=True)
+        # Format 600 publishes its snapshot after the FUSE loop has stopped cleanly.
+        try:
+            lock=(root/'storage.lock').open('rb')
+        except FileNotFoundError:
+            pass
+        else:
+            with lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
         if traced:
             traced.wait(timeout=15)
 

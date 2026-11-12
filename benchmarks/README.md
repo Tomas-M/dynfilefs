@@ -7,18 +7,39 @@ python3 tests/integration.py /absolute/path/to/dynfilefs
 python3 benchmarks/run.py /absolute/path/to/dynfilefs results.json --directory /path/on/test/filesystem --trace
 ```
 
-Add `--baseline /path/to/released/dynfilefs` to the correctness runner to check
-storage compatibility between builds of the same format in both directions. The callback-level fault
-tests also check ENOSPC, short-write index publication, synchronization retries,
-concurrent split-file writes and descriptor-backed reads:
+Add `--baseline /path/to/format-500/dynfilefs` to the correctness runner to check
+metadata-only conversion from format 500. The backend fault tests check ENOSPC,
+short writes, synchronization/publication retries, parallel I/O, session rollback,
+interrupted mounts and descriptor-backed reads:
 
 ```sh
 test_dir=$(mktemp -d)
-cc -D_FILE_OFFSET_BITS=64 $(pkg-config --cflags fuse3) tests/io.c -o "$test_dir/io" $(pkg-config --libs fuse3)
-"$test_dir/io" -f "$test_dir/storage" -m "$test_dir/mount" -s 4 -p 3
+cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c \
+  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=rename -o "$test_dir/io"
+"$test_dir/io" "$test_dir"
+cc -DTEST_ALLOC_FAILURE tests/bitmap.c bitmap.c \
+  -Wl,--wrap=malloc,--wrap=calloc -o "$test_dir/bitmap"
+"$test_dir/bitmap"
+cc -D_FILE_OFFSET_BITS=64 tests/journal.c format.c journal.c -o "$test_dir/journal"
+"$test_dir/journal" "$test_dir"
+cc -D_FILE_OFFSET_BITS=64 tests/lock.c format.c -Wl,--wrap=flock,--wrap=fsync -o "$test_dir/lock"
+"$test_dir/lock" "$test_dir"
 ```
 
-The benchmark creates disposable 512 MiB storage split into sixteen 32 MiB parts.
+Use `--peer /path/to/another-format-600/dynfilefs` with the integration runner to
+check new-format interoperability, including native 64-bit and static 32-bit builds.
+Add `--lock-test /path/to/compiled/lock` to run lock handoff tests on the FAT32 fixture too.
+
+Format 600 retains a mount-start rollback point and a latest-`fsync` crash checkpoint.
+The first overwrite after a checkpoint uses COW again. A changed `fsync` appends
+changed root entries and bitmap words in 4 KiB-aligned records to a bounded 32 MiB
+log, while bitmap comparison and allocator preparation remain linear in bitmap size.
+Log compaction and clean unmount write a complete root/bitmap snapshot; no-change
+calls skip backing synchronization. The microbenchmark below measures I/O within one mount and
+includes end-of-pass checkpoints. Compare in-place writes between checkpoints, first
+COW writes, checkpoint costs and final unmount separately against format 500.
+
+The benchmark creates disposable 512 MiB storage with a 32 MiB physical part limit.
 It measures initial allocation, 128 KiB and 1 MiB sequential reads and overwrites, eight-worker
 4 KiB random reads and overwrites, and 4 KiB writes with an fsync after each write.
 Timed workloads run three times for three seconds; the JSON retains all samples
@@ -33,7 +54,11 @@ The reported daemon CPU percentage includes all its worker threads; it may excee
 The optional trace counts storage syscalls during a separate 16 MiB write/read
 and is excluded from timed results. The correctness runner covers sparse zeros,
 unaligned writes, odd split sizes, split boundaries, EOF, partial physical tails,
-remounts, parallel writes, concurrent fsync, loop-mounted ext4, and rejection of the old format.
+remounts, parallel writes, concurrent fsync, lazy allocation, COW rollback and cancellation
+through the mounted `rollback` control file, invalid control writes, 32 MiB journal
+rollover and recovery, bounded
+recycling, truncation, interrupted mounts, loop-mounted ext4/FAT32, format rejection
+and automatic format-500 conversion, including original-binary fixtures when a baseline is supplied.
 
 For the practical XFS loop-device workload, install xfsprogs and run:
 

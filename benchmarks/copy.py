@@ -3,6 +3,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import ctypes
+import fcntl
 import hashlib
 import json
 import os
@@ -47,6 +48,14 @@ def mounted(binary, root, create):
             subprocess.run(['umount', str(inner)], check=True)
     finally:
         subprocess.run(['umount', str(mount)], check=True)
+        # Wait for the final snapshot publication before remounting or removing files.
+        try:
+            lock=(root/'storage.lock').open('rb')
+        except FileNotFoundError:
+            pass
+        else:
+            with lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
 
 
 # Use real nonzero data; source files live on tmpfs to avoid source-disk contention.

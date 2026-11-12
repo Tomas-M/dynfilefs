@@ -1,4 +1,4 @@
-.deps/dynfilefs.Po
+.deps/
 Makefile
 Makefile.in
 config.h
@@ -7,7 +7,7 @@ config.log
 config.status
 configure~
 dynfilefs
-dynfilefs.o
+*.o
 stamp-h1
 aclocal.m4
 compile
@@ -17,3 +17,4 @@ install-sh
 missing
 static/.build.*/
 __pycache__/
+.tmp/

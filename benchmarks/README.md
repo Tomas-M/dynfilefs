@@ -5,20 +5,21 @@ Run on Linux as root with libfuse 3.8+, Python 3.11+, fio, strace and e2fsprogs 
 ```sh
 python3 tests/integration.py /absolute/path/to/dynfilefs
 python3 tests/info.py /absolute/path/to/dynfilefs
+python3 tests/snapshots.py /absolute/path/to/dynfilefs
 python3 benchmarks/run.py /absolute/path/to/dynfilefs results.json --directory /path/on/test/filesystem --trace
 ```
 
 Add `--baseline /path/to/format-500/dynfilefs` to the correctness runner to check
 metadata-only conversion from format 500. The backend fault tests check ENOSPC,
-short writes, synchronization/publication retries, parallel I/O, session rollback,
+short writes, synchronization/publication retries, parallel I/O, snapshot lineage,
 interrupted mounts and descriptor-backed reads:
 
 ```sh
 test_dir=$(mktemp -d)
-cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c \
+cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c report.c \
   -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=rename -o "$test_dir/io"
 "$test_dir/io" "$test_dir"
-cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c journal.c bitmap.c migration.c \
+cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c journal.c bitmap.c migration.c report.c \
   -pthread -Wl,--wrap=pread,--wrap=pread64,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/cache"
 "$test_dir/cache" "$test_dir"
 cc -DTEST_ALLOC_FAILURE tests/bitmap.c bitmap.c \
@@ -28,27 +29,47 @@ cc -D_FILE_OFFSET_BITS=64 tests/journal.c format.c journal.c -o "$test_dir/journ
 "$test_dir/journal" "$test_dir"
 cc -D_FILE_OFFSET_BITS=64 tests/lock.c format.c -Wl,--wrap=flock,--wrap=fsync -o "$test_dir/lock"
 "$test_dir/lock" "$test_dir"
+cc -D_FILE_OFFSET_BITS=64 tests/snapshots.c storage.c format.c journal.c bitmap.c migration.c report.c \
+  -pthread -Wl,--wrap=fsync,--wrap=renameat -o "$test_dir/snapshots"
+"$test_dir/snapshots" "$test_dir"
+cc -D_FILE_OFFSET_BITS=64 tests/freeze.c -Wl,--wrap=ioctl -o "$test_dir/freeze"
+"$test_dir/freeze"
 ```
 
-Use `--peer /path/to/another-format-600/dynfilefs` with the integration runner to
+Use `--peer /path/to/another-current-format-600/dynfilefs` with the integration runner to
 check new-format interoperability, including native 64-bit and static 32-bit builds.
 Add `--lock-test /path/to/compiled/lock` to run lock handoff tests on the FAT32 fixture too.
 
-Format 600 retains a mount-start rollback point and a latest-`fsync` crash checkpoint.
+Format 600 retains immutable saved points and a latest-`fsync` crash checkpoint.
+Automatic start/end points reuse unchanged states; retention keeps ten live automatic
+points while manual points remain explicit. Parent IDs, including 4096-byte records
+for deleted ancestors, preserve branches through restores and name reuse.
 The first overwrite after a checkpoint uses COW again. A changed `fsync` appends
 changed root entries and bitmap words in 4 KiB-aligned records to a bounded 32 MiB
 log. The log stays open between checkpoints; bitmap comparison, checkpoint updates
 and free-run maintenance visit only touched words. Allocation groups free bitmap words
 by their longest run and joins neighboring runs for larger writes. Finding the live
 end can still scan unused trailing words; startup and full snapshots remain linear.
-The added RAM indexes cost 10 bytes per bitmap word in the i686 build (about 2.5 MiB
-per 64 GiB of physical slot range, before capacity rounding), with no format change.
+Named snapshots add one aggregate protection bitmap (2 MiB per 64 GiB of physical
+slot range), catalog names and decoded metadata only for open saved images. Creation
+flushes the active state before publishing its saved root. Deletion reconstructs the
+remaining snapshot union and commits the history-only replacement before exposing released
+blocks. Startup also synchronizes the snapshot directory before reusing observed free
+slots. Numbered parts retain their space for reuse;
+there is no data compaction or hole punching. The tests cover publication failures,
+directory flush retries, immutable concurrent views, restored geometry, global reuse,
+lineage across crashes, automatic retention, JSON inspection and exact reusable slot counts,
+automatic ext4/XFS freeze and rejection of unsupported loop consumers. Filesystem
+tests skip a type when its mkfs tool is unavailable.
+The allocator's existing RAM indexes cost 10 bytes per bitmap word in the i686 build
+(about 2.5 MiB per 64 GiB of physical slot range, before capacity rounding).
 Index pages now use a lazy 32 MiB cache split across mixed-hash I/O lock buckets.
 Dirty eviction writes only private working pages without fsync; roots remain queued
 until the usual data/index-before-log checkpoint. Bitmap arrays start at their exact
 required capacity and grow with at most 12.5% reserve above 4096 words. A filled
-1 TiB image therefore needs about 227–250 MiB of steady internal allocations in the
-i686 build, plus allocator/FUSE overhead; bitmap growth and full snapshots add
+1 TiB image needs about 227–250 MiB for the existing allocator/cache in the i686
+build, plus the snapshot bitmap above, open saved roots and allocator/FUSE overhead;
+bitmap growth and full snapshots add
 temporary buffers. This is a cache bound, not a hard process-RAM limit.
 With the earlier 16 MiB cache, peak daemon RSS in the strided-write test fell
 from 295.3 MiB to 21.1 MiB for 128 GiB of virtual space.
@@ -92,10 +113,10 @@ The reported daemon CPU percentage includes all its worker threads; it may excee
 The optional trace counts storage syscalls during a separate 16 MiB write/read
 and is excluded from timed results. The correctness runner covers sparse zeros,
 unaligned writes, odd split sizes, split boundaries, EOF, partial physical tails,
-remounts, parallel writes, concurrent fsync, lazy allocation, COW rollback and cancellation
-through the mounted `rollback` control file, invalid control writes, 32 MiB journal
-rollover and recovery, bounded
-recycling, truncation, interrupted mounts, loop-mounted ext4/FAT32, format rejection
+remounts, parallel writes, concurrent fsync, lazy allocation, automatic session points,
+named restores, immutable views, live/offline JSON inspection, reusable capacity,
+invalid control writes, 32 MiB journal rollover and recovery, bounded recycling,
+interrupted mounts, loop-mounted ext4/XFS/FAT32, format rejection
 and automatic format-500 conversion, including original-binary fixtures when a baseline is supplied.
 
 For the practical XFS loop-device workload, install xfsprogs and run:

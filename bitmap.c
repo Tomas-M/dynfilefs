@@ -79,27 +79,29 @@ int map_grow(struct block_map *map, uint64_t slots)
     if (words > map->capacity)
     {
         struct block_map grown=*map;
-        grown.base=calloc(capacity, sizeof(*grown.base));
+        grown.read_pins=calloc(capacity, sizeof(*grown.read_pins));
         grown.checkpoint=calloc(capacity, sizeof(*grown.checkpoint));
         grown.used=calloc(capacity, sizeof(*grown.used));
+        grown.snapshots=calloc(capacity, sizeof(*grown.snapshots));
         grown.free_bits=calloc(capacity, sizeof(*grown.free_bits));
         grown.free_next=calloc(capacity, sizeof(*grown.free_next));
         grown.free_prev=calloc(capacity, sizeof(*grown.free_prev));
         grown.free_run=calloc(capacity, sizeof(*grown.free_run));
         grown.dirty_words=malloc(capacity*sizeof(*grown.dirty_words));
         grown.dirty_flags=calloc(capacity, sizeof(*grown.dirty_flags));
-        int missing_maps=!grown.base || !grown.checkpoint || !grown.used || !grown.free_bits;
+        int missing_maps=!grown.read_pins || !grown.checkpoint || !grown.used || !grown.free_bits;
         int missing_index=!grown.free_next || !grown.free_prev || !grown.free_run;
-        if (missing_maps || missing_index || !grown.dirty_words || !grown.dirty_flags)
+        if (missing_maps || missing_index || !grown.snapshots || !grown.dirty_words || !grown.dirty_flags)
         {
             map_destroy(&grown);
             return -ENOMEM;
         }
         if (map->words)
         {
-            memcpy(grown.base, map->base, map->words*sizeof(*grown.base));
+            memcpy(grown.read_pins, map->read_pins, map->words*sizeof(*grown.read_pins));
             memcpy(grown.checkpoint, map->checkpoint, map->words*sizeof(*grown.checkpoint));
             memcpy(grown.used, map->used, map->words*sizeof(*grown.used));
+            memcpy(grown.snapshots, map->snapshots, map->words*sizeof(*grown.snapshots));
             memcpy(grown.free_bits, map->free_bits, map->words*sizeof(*grown.free_bits));
             memcpy(grown.free_next, map->free_next, map->words*sizeof(*grown.free_next));
             memcpy(grown.free_prev, map->free_prev, map->words*sizeof(*grown.free_prev));
@@ -116,36 +118,35 @@ int map_grow(struct block_map *map, uint64_t slots)
     return 0;
 }
 
-// Begin with identical baseline, checkpoint and working occupancy, but no free extents yet.
+// Begin with identical checkpoint and working occupancy; descriptor pins start empty.
 int map_init(struct block_map *map, const uint64_t *bits, uint64_t slots)
 {
     memset(map, 0, sizeof(*map));
     int result=map_grow(map, slots);
     if (result || !bits || !slots) return result;
-    memcpy(map->base, bits, map->words*sizeof(*bits));
-    if (slots%64) map->base[map->words-1]&=word_mask(0, slots%64);
-    memcpy(map->used, map->base, map->words*sizeof(*bits));
-    memcpy(map->checkpoint, map->base, map->words*sizeof(*bits));
+    memcpy(map->used, bits, map->words*sizeof(*bits));
+    if (slots%64) map->used[map->words-1]&=word_mask(0, slots%64);
+    memcpy(map->checkpoint, map->used, map->words*sizeof(*bits));
     return 0;
 }
 
 // Release all session-only allocator state.
 void map_destroy(struct block_map *map)
 {
-    free(map->base); free(map->checkpoint); free(map->used); free(map->free_bits);
+    free(map->read_pins); free(map->checkpoint); free(map->used); free(map->snapshots); free(map->free_bits);
     free(map->free_next); free(map->free_prev); free(map->free_run);
     free(map->dirty_words); free(map->dirty_flags);
     memset(map, 0, sizeof(*map));
 }
 
-// Expose existing physical slots while preserving all three states' allocations.
+// Expose only physical slots unreferenced by working, recovery, saved or deferred-read states.
 void map_make_available(struct block_map *map, uint64_t first, uint64_t count)
 {
     while (count)
     {
         size_t word=(size_t)(first/64);
         unsigned length=(unsigned)(count < 64-first%64 ? count : 64-first%64);
-        uint64_t bits=word_mask(first%64, length) & ~(map->base[word]|map->checkpoint[word]|map->used[word]);
+        uint64_t bits=word_mask(first%64, length) & ~(map->read_pins[word]|map->checkpoint[word]|map->used[word]|map->snapshots[word]);
         set_available(map, word, map->free_bits[word]|bits);
         first+=length;
         count-=length;
@@ -233,7 +234,7 @@ void map_reserve(struct block_map *map, uint64_t first, uint64_t count)
     }
 }
 
-// Retire working references without releasing baseline or checkpoint pins.
+// Retire working references without releasing recovery, snapshot or deferred-read pins.
 void map_release(struct block_map *map, uint64_t first, uint64_t count)
 {
     while (count)
@@ -241,7 +242,7 @@ void map_release(struct block_map *map, uint64_t first, uint64_t count)
         size_t word=(size_t)(first/64);
         unsigned length=(unsigned)(count < 64-first%64 ? count : 64-first%64);
         uint64_t mask=word_mask(first%64, length);
-        uint64_t bits=map->used[word] & mask & ~(map->base[word]|map->checkpoint[word]);
+        uint64_t bits=map->used[word] & mask & ~(map->read_pins[word]|map->checkpoint[word]|map->snapshots[word]);
         set_used(map, word, map->used[word]&~mask);
         set_available(map, word, map->free_bits[word]|bits);
         first+=length;
@@ -249,10 +250,10 @@ void map_release(struct block_map *map, uint64_t first, uint64_t count)
     }
 }
 
-// A block referenced by either recovery state requires copy-on-write.
+// Every saved, checkpointed or deferred-read reference requires copy-on-write.
 int map_protected(const struct block_map *map, uint64_t slot)
 {
-    return map_test(map->base, slot) || map_test(map->checkpoint, slot);
+    return map_test(map->read_pins, slot) || map_test(map->checkpoint, slot) || map_test(map->snapshots, slot);
 }
 
 // Update changed checkpoint words and expose only blocks released by the old checkpoint.
@@ -261,10 +262,41 @@ void map_checkpoint(struct block_map *map)
     for (size_t i=0; i < map->dirty_count; i++)
     {
         size_t word=map->dirty_words[i];
-        uint64_t released=map->checkpoint[word] & ~(map->used[word]|map->base[word]);
+        uint64_t released=map->checkpoint[word] & ~(map->used[word]|map->read_pins[word]|map->snapshots[word]);
         map->checkpoint[word]=map->used[word];
         set_available(map, word, map->free_bits[word]|released);
         map->dirty_flags[word]=0;
     }
     map->dirty_count=0;
+}
+
+// Replace snapshot pins after durable deletion, exposing only newly unreferenced slots.
+void map_set_snapshots(struct block_map *map, const uint64_t *bits)
+{
+    for (size_t i=0; i < map->words; i++)
+    {
+        uint64_t released=map->snapshots[i] & ~(bits[i]|map->used[i]|map->read_pins[i]|map->checkpoint[i]);
+        map->snapshots[i]=bits[i];
+        set_available(map, i, (map->free_bits[i]|released)&~bits[i]);
+    }
+}
+
+// Deferred FUSE descriptor replies keep their source bytes immutable until the mount stops.
+void map_pin_read(struct block_map *map, uint64_t first, uint64_t count)
+{
+    while (count)
+    {
+        unsigned length=(unsigned)(count < 64-first%64 ? count : 64-first%64);
+        map->read_pins[first/64]|=word_mask(first%64, length);
+        first+=length;
+        count-=length;
+    }
+}
+
+// Count allocator-ready slots, excluding shared and protected blocks and physical-file gaps.
+uint64_t map_reusable_bytes(const struct block_map *map)
+{
+    uint64_t blocks=0;
+    for (size_t i=0; i < map->words; i++) blocks+=(unsigned)__builtin_popcountll(map->free_bits[i]);
+    return blocks*4096;
 }

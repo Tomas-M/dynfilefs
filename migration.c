@@ -21,7 +21,8 @@ static int legacy_header(int fd, uint64_t *split, uint64_t *size)
     int result=read_at(fd, magic, sizeof(magic), 0);
     if (!result) result=read_at(fd, header, sizeof(header), 2048);
     if (result) return result;
-    uint64_t version=!memcmp(magic, "DYNFS600", 8) ? DYN_FORMAT : le64toh(header[0]);
+    if (!memcmp(magic, "DYNFS", 5)) return -EPROTONOSUPPORT;
+    uint64_t version=le64toh(header[0]);
     if (version!=500)
     {
         fprintf(stderr, "Conversion requires storage format 500 (found %llu).\n", (unsigned long long)version);
@@ -87,7 +88,7 @@ int migration_convert(const char *path)
     uint64_t *lengths=NULL;
     char header[DYN_BLOCK_SIZE];
     int source=-1, output=-1, result=0, parts=0, created=0, publishing=0;
-    const char *companions[]={".work", ".log", ".rollback"};
+    const char *companions[]={".work", ".log", ".snapshots"};
     for (size_t i=0; i < sizeof(companions)/sizeof(*companions); i++)
     {
         int fd=open_suffix(path, companions[i], O_RDONLY);

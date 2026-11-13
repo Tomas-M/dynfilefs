@@ -31,16 +31,17 @@ static void check_failures(void)
     struct block_map map;
     uint64_t original=1, first;
     assert(!map_init(&map, &original, 64));
+    map_pin_read(&map, 0, 1);
     map_make_available(&map, 0, 64);
     assert(map_take_at(&map, 1, 1)==1);
     map_release(&map, 1, 1);
     struct block_map before=map;
-    for (unsigned allocation=1; allocation <= 9; allocation++)
+    for (unsigned allocation=1; allocation <= 10; allocation++)
     {
         failure_after=allocation;
         assert(map_grow(&map, 1024)==-ENOMEM);
         assert(!memcmp(&map, &before, sizeof(map)));
-        assert(map.base[0]==1 && map.checkpoint[0]==1 && map.used[0]==1 && map.free_bits[0]==~UINT64_C(1));
+        assert(map.read_pins[0]==1 && map.checkpoint[0]==1 && map.used[0]==1 && map.free_bits[0]==~UINT64_C(1));
         assert(map.dirty_count==1 && map.dirty_flags[0] && map.dirty_words[0]==0);
     }
     assert(map_take(&map, 64, &first)==63 && first==1);
@@ -49,12 +50,13 @@ static void check_failures(void)
 }
 #endif
 
-// COW must preserve the baseline even after its working references are retired.
+// COW must preserve the descriptor pins even after its working references are retired.
 static void check_snapshots(void)
 {
     uint64_t bits[]={UINT64_C(1)|(UINT64_C(1)<<63), UINT64_C(2)};
     struct block_map map, next;
     assert(!map_init(&map, bits, 100));
+    map_pin_read(&map, 0, 1); map_pin_read(&map, 63, 1); map_pin_read(&map, 65, 1);
     map_make_available(&map, 0, 100);
     map_release(&map, 0, 1);
     unsigned char allocated[100]={0};
@@ -80,12 +82,13 @@ static void check_snapshots(void)
     map_destroy(&map);
 }
 
-// Replaced checkpoints release their old blocks while the mount baseline stays pinned.
+// Replaced checkpoints release old blocks while descriptor references remain pinned.
 static void check_checkpoints(void)
 {
     struct block_map map;
     uint64_t original=1, first;
     assert(!map_init(&map, &original, 5));
+    map_pin_read(&map, 0, 1);
     map_make_available(&map, 0, 5);
     assert(map_take(&map, 1, &first)==1 && first==1);
     map_release(&map, 0, 1);
@@ -107,7 +110,7 @@ static void check_checkpoints(void)
     assert(map_take(&map, 64, &first)==3 && first==2);
     assert(map_take(&map, 64, &first)==1 && first==128);
     assert(!map_take(&map, 64, &first));
-    assert(map.base[0]==1);
+    assert(map.read_pins[0]==1);
     map_destroy(&map);
 }
 
@@ -291,14 +294,16 @@ static void check_randomized(void)
     enum { SLOTS=512 };
     struct block_map map;
     uint64_t bits[8]={0};
-    unsigned char physical[SLOTS], base[SLOTS], checkpoint[SLOTS], used[SLOTS], dirty[8]={0};
+    unsigned char physical[SLOTS], pins[SLOTS], checkpoint[SLOTS], used[SLOTS], dirty[8]={0};
     for (size_t i=0; i < SLOTS; i++)
     {
         physical[i]=i%128 < 96;
-        base[i]=checkpoint[i]=used[i]=physical[i] && i%23==0;
-        if (base[i]) bits[i/64]|=UINT64_C(1)<<(i%64);
+        pins[i]=checkpoint[i]=used[i]=physical[i] && i%23==0;
+        if (pins[i]) bits[i/64]|=UINT64_C(1)<<(i%64);
     }
     assert(!map_init(&map, bits, SLOTS));
+    for (size_t i=0; i < SLOTS; i++)
+        if (pins[i]) map_pin_read(&map, i, 1);
     for (size_t i=0; i < SLOTS; i+=128) map_make_available(&map, i, 96);
     uint32_t seed=7;
     for (unsigned step=0; step < 20000; step++)
@@ -318,16 +323,16 @@ static void check_randomized(void)
                 while (expected < maximum && slot+expected < SLOTS)
                 {
                     size_t i=slot+expected;
-                    if (!physical[i] || base[i] || checkpoint[i] || used[i]) break;
+                    if (!physical[i] || pins[i] || checkpoint[i] || used[i]) break;
                     expected++;
                 }
                 assert(count==expected);
             }
             else if (!count)
-                for (size_t i=0; i < SLOTS; i++) assert(!physical[i] || base[i] || checkpoint[i] || used[i]);
+                for (size_t i=0; i < SLOTS; i++) assert(!physical[i] || pins[i] || checkpoint[i] || used[i]);
             for (size_t i=first; i < first+count; i++)
             {
-                assert(physical[i] && !base[i] && !checkpoint[i] && !used[i]);
+                assert(physical[i] && !pins[i] && !checkpoint[i] && !used[i]);
                 used[i]=1;
             }
         }
@@ -352,9 +357,9 @@ static void check_randomized(void)
         for (size_t i=0; i < SLOTS; i++)
         {
             if (operation!=3 && before[i]!=used[i]) dirty[i/64]=1;
-            assert(map_test(map.base, i)==base[i] && map_test(map.checkpoint, i)==checkpoint[i]);
+            assert(map_test(map.read_pins, i)==pins[i] && map_test(map.checkpoint, i)==checkpoint[i]);
             assert(map_test(map.used, i)==used[i]);
-            assert(map_test(map.free_bits, i)==(physical[i] && !base[i] && !checkpoint[i] && !used[i]));
+            assert(map_test(map.free_bits, i)==(physical[i] && !pins[i] && !checkpoint[i] && !used[i]));
         }
         size_t count=0;
         unsigned char listed[8]={0};
@@ -374,6 +379,29 @@ static void check_randomized(void)
     map_destroy(&map);
 }
 
+// Reusable capacity counts physical free slots and excludes every kind of pin.
+static void check_reusable(void)
+{
+    struct block_map map;
+    uint64_t first, snapshots[4]={2};
+    assert(!map_init(&map, NULL, 128));
+    assert(!map.read_pins[0] && !map_reusable_bytes(&map));
+    map_make_available(&map, 0, 128);
+    assert(map_reusable_bytes(&map)==128*4096);
+    assert(map_take(&map, 1, &first)==1 && first==0);
+    map_pin_read(&map, first, 1);
+    map_release(&map, first, 1);
+    map_checkpoint(&map);
+    assert(map_reusable_bytes(&map)==127*4096 && map_protected(&map, first));
+    map_set_snapshots(&map, snapshots);
+    assert(map_reusable_bytes(&map)==126*4096);
+    snapshots[0]=0;
+    map_set_snapshots(&map, snapshots);
+    assert(map_reusable_bytes(&map)==127*4096);
+    assert(!map_grow(&map, 256) && map_reusable_bytes(&map)==127*4096);
+    map_destroy(&map);
+}
+
 // Exercise allocator invariants without FUSE or backing storage.
 int main(void)
 {
@@ -385,6 +413,7 @@ int main(void)
     check_fragmentation();
     check_dirty_words();
     check_randomized();
+    check_reusable();
 #ifdef TEST_ALLOC_FAILURE
     check_failures();
 #endif

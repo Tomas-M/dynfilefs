@@ -15,6 +15,8 @@ struct disk_header
 {
     char magic[8];
     uint64_t version, size, part_size, slots, checksum, sequence;
+    uint64_t id, parent, created;
+    char name[DYN_NAME_MAX+1];
 };
 
 // Read an entire metadata range, rejecting truncated files.
@@ -129,11 +131,24 @@ uint64_t metadata_checksum(const unsigned char *bytes, size_t size)
 // Derive metadata lengths without trusting counts supplied by a file.
 int snapshot_length(const struct snapshot *snapshot, size_t *length)
 {
-    if (!snapshot->size || snapshot->size%4096 || snapshot->size > INT64_MAX) return -EINVAL;
+    if (!memchr(snapshot->name, 0, sizeof(snapshot->name))) return -EINVAL;
+    if (snapshot->id)
+    {
+        if (!snapshot->name[0] || snapshot->parent >= snapshot->id) return -EINVAL;
+    }
+    else if (snapshot->name[0] || snapshot->created) return -EINVAL;
     if (!snapshot->part_size || snapshot->part_size%4096 || snapshot->part_size > INT64_MAX) return -EINVAL;
     uint64_t capacity=snapshot->part_size/4096;
     if (capacity > (UINT64_MAX-1)/DYN_MAX_PARTS) return -EOVERFLOW;
     if (snapshot->slots > capacity*DYN_MAX_PARTS) return -EINVAL;
+    // Deleted points keep their lineage and name, but no data or allocation references.
+    if (!snapshot->size)
+    {
+        if (!snapshot->id || snapshot->slots) return -EINVAL;
+        *length=4096;
+        return 0;
+    }
+    if (snapshot->size%4096 || snapshot->size > INT64_MAX) return -EINVAL;
     uint64_t roots=(snapshot->size-1)/(4096*512)+1;
     if (snapshot->slots > UINT64_MAX-63) return -EOVERFLOW;
     uint64_t words=(snapshot->slots+63)/64;
@@ -148,6 +163,7 @@ int snapshot_validate(const struct snapshot *snapshot)
     size_t length;
     int result=snapshot_length(snapshot, &length);
     if (result) return result;
+    if (!snapshot->size) return snapshot->root_count || snapshot->root || snapshot->bits ? -EIO : 0;
     if (snapshot->root_count!=(snapshot->size-1)/(4096*512)+1) return -EIO;
     if (!snapshot->root || (snapshot->slots && !snapshot->bits)) return -EIO;
     for (size_t i=0; i < snapshot->root_count; i++)
@@ -165,11 +181,15 @@ int snapshot_load(int fd, struct snapshot *snapshot)
     struct disk_header header;
     int result=read_at(fd, &header, sizeof(header), 0);
     if (result) return result;
-    if (memcmp(header.magic, "DYNFS600", 8) || le64toh(header.version)!=DYN_FORMAT) return -EPROTONOSUPPORT;
+    if (memcmp(header.magic, DYN_MAGIC, 8) || le64toh(header.version)!=DYN_FORMAT) return -EPROTONOSUPPORT;
     snapshot->size=le64toh(header.size);
     snapshot->part_size=le64toh(header.part_size);
     snapshot->slots=le64toh(header.slots);
     snapshot->sequence=le64toh(header.sequence);
+    snapshot->id=le64toh(header.id);
+    snapshot->parent=le64toh(header.parent);
+    snapshot->created=le64toh(header.created);
+    memcpy(snapshot->name, header.name, sizeof(snapshot->name));
     size_t length;
     result=snapshot_length(snapshot, &length);
     if (result) return result;
@@ -182,11 +202,11 @@ int snapshot_load(int fd, struct snapshot *snapshot)
     if (result) { free(bytes); return result; }
     memset(bytes+offsetof(struct disk_header, checksum), 0, 8);
     if (metadata_checksum(bytes, length)!=le64toh(header.checksum)) { free(bytes); return -EIO; }
-    snapshot->root_count=(size_t)((snapshot->size-1)/(4096*512)+1);
+    snapshot->root_count=snapshot->size ? (size_t)((snapshot->size-1)/(4096*512)+1) : 0;
     size_t words=(size_t)((snapshot->slots+63)/64);
-    snapshot->root=malloc(snapshot->root_count*8);
+    snapshot->root=snapshot->root_count ? malloc(snapshot->root_count*8) : NULL;
     snapshot->bits=words ? malloc(words*8) : NULL;
-    if (!snapshot->root || (words && !snapshot->bits)) { free(bytes); snapshot_free(snapshot); return -ENOMEM; }
+    if ((snapshot->root_count && !snapshot->root) || (words && !snapshot->bits)) { free(bytes); snapshot_free(snapshot); return -ENOMEM; }
     uint64_t *entries=(uint64_t *)(bytes+4096);
     for (size_t i=0; i < snapshot->root_count; i++) snapshot->root[i]=le64toh(entries[i]);
     for (size_t i=0; i < words; i++) snapshot->bits[i]=le64toh(entries[snapshot->root_count+i]);
@@ -202,16 +222,22 @@ int snapshot_write(int fd, const struct snapshot *snapshot)
     size_t length;
     int result=snapshot_length(snapshot, &length);
     if (result) return result;
+    if (!snapshot->size && (snapshot->root_count || snapshot->root || snapshot->bits)) return -EINVAL;
     unsigned char *bytes=calloc(1, length);
     if (!bytes) return -ENOMEM;
     struct disk_header *header=(struct disk_header *)bytes;
-    memcpy(header->magic, "DYNFS600", 8);
+    memcpy(header->magic, DYN_MAGIC, 8);
     header->version=htole64(DYN_FORMAT);
     header->size=htole64(snapshot->size);
     header->part_size=htole64(snapshot->part_size);
     header->slots=htole64(snapshot->slots);
     header->sequence=htole64(snapshot->sequence);
-    size_t roots=(size_t)((snapshot->size-1)/(4096*512)+1), words=(size_t)((snapshot->slots+63)/64);
+    header->id=htole64(snapshot->id);
+    header->parent=htole64(snapshot->parent);
+    header->created=htole64(snapshot->created);
+    memcpy(header->name, snapshot->name, strlen(snapshot->name)+1);
+    size_t roots=snapshot->size ? (size_t)((snapshot->size-1)/(4096*512)+1) : 0;
+    size_t words=(size_t)((snapshot->slots+63)/64);
     uint64_t *entries=(uint64_t *)(bytes+4096);
     for (size_t i=0; i < roots; i++) entries[i]=htole64(snapshot->root[i]);
     for (size_t i=0; i < words; i++) entries[roots+i]=htole64(snapshot->bits[i]);

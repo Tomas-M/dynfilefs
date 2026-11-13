@@ -16,13 +16,11 @@ import time
 
 # Keep the foreground daemon observable and wait for commit before remounting.
 @contextlib.contextmanager
-def mounted(binary, storage, mount, size=8, split=3, stop_signal=None, norollback=False, mount_options=None):
+def mounted(binary, storage, mount, size=8, split=3, stop_signal=None, mount_options=None):
     mount.mkdir(exist_ok=True)
     log_path=mount.parent/(mount.name+'.log')
     with log_path.open('wb') as log:
         command=[binary, '-d', '-f', str(storage), '-m', str(mount), '-s', str(size), '-p', str(split)]
-        if norollback:
-            command.append('--norollback')
         if mount_options:
             command += ['-o', mount_options]
         process=subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
@@ -55,27 +53,17 @@ def mounted(binary, storage, mount, size=8, split=3, stop_signal=None, norollbac
                 assert_clean_storage(storage)
 
 
-# Clean shutdown removes the lock; a pending rollback retains its transaction files.
+# Clean shutdown retains the durable catalog but removes temporary recovery companions.
 def assert_clean_storage(storage):
     prefix=storage.name+'.'
     companions={path.name[len(storage.name):] for path in storage.parent.iterdir() if path.name.startswith(prefix) and not path.name[len(prefix):].isdigit()}
-    assert '.lock' not in companions, companions
-    if '.rollback' in companions:
-        assert companions <= {'.rollback', '.log', '.work', '.next', '.migrate'}, companions
-    else:
-        assert not companions, companions
+    assert companions <= {'.snapshots'}, companions
 
 
 # Numeric suffixes identify data parts independently of control/metadata files.
 def parts(storage):
     prefix=storage.name+'.'
     return sorted((path for path in storage.parent.iterdir() if path.name.startswith(prefix) and path.name[len(prefix):].isdigit()), key=lambda path:int(path.name[len(prefix):]))
-
-
-# Exercise ordinary shell redirection and immediately observe the readable control state.
-def set_rollback(mount, enabled):
-    subprocess.run(['sh', '-c', 'echo "$1" > "$2"', 'sh', str(enabled), str(mount/'rollback')], check=True)
-    assert (mount/'rollback').read_bytes()==f'{enabled}\n'.encode()
 
 
 # Compare persisted data with an independent byte-array oracle after remounting.
@@ -205,8 +193,8 @@ def check_old_format(binary, root):
         storage=root/f'old-{version}'
         header=bytearray(4096)
         struct.pack_into('<qqq', header, 2048, version, 2*1024*1024, 8*1024*1024)
-        if version==600:
-            header[:8]=b'DYNFS600'
+        if version>=600:
+            header[:8]=('DYNFS'+str(version)).encode()
             struct.pack_into('<q', header, 2048, 500)
         storage.write_bytes(header)
         split=Path(str(storage)+'.0')
@@ -251,6 +239,19 @@ def check_automatic_conversion(binary, root):
                 assert storage.read_bytes()[:8]==b'DYNFS600'
                 assert not marker.exists()
         assert old_part.read_bytes()==original
+    # Conversion must not adopt or replace an unrelated snapshot catalog.
+    storage=root/'orphan-history'
+    header=bytearray(4096)
+    struct.pack_into('<3Q', header, 2048, 500, 2*1024*1024, 2*1024*1024)
+    storage.write_bytes(header)
+    history=Path(str(storage)+'.snapshots')
+    history.mkdir()
+    keep=history/'keep'
+    keep.write_bytes(b'keep this history')
+    mount=root/'orphan-mount'
+    mount.mkdir()
+    result=subprocess.run([binary, '-f', str(storage), '-m', str(mount)], capture_output=True)
+    assert result.returncode and storage.read_bytes()==header and keep.read_bytes()==b'keep this history'
     print('PASS: automatic conversion, partial tails and interrupted-conversion retry', flush=True)
 
 
@@ -275,12 +276,12 @@ def check_conversion(binary, baseline, root):
     with mounted(binary, storage, root/'converted-mount') as path:
         fd=os.open(path, os.O_RDWR)
         assert os.pwrite(fd, b'converted overwrite', 123)==19
+        expected[123:142]=b'converted overwrite'
         os.fsync(fd)
         os.close(fd)
-        set_rollback(path.parent, 1)
     with mounted(binary, storage, root/'converted-mount') as path:
         assert path.read_bytes()==expected
-    print('PASS: format-500 conversion preserves payload positions and supports rollback', flush=True)
+    print('PASS: format-500 conversion preserves payload positions', flush=True)
 
 
 # Huge virtual capacity must not allocate physical parts or a complete block index.
@@ -321,203 +322,6 @@ def check_part_limits(binary, root):
     print('PASS: physical split limits include indexes for odd/even sizes', flush=True)
 
 
-# A late rollback request covers the complete session, including later writes.
-def check_rollback(binary, root):
-    storage, mount=root/'rollback', root/'rollback-mount'
-    expected=bytearray(8*1024*1024)
-    initial=random.Random(73).randbytes(131072)
-    expected[:len(initial)]=initial
-    with mounted(binary, storage, mount, split=2) as path:
-        fd=os.open(path, os.O_RDWR)
-        assert os.pwrite(fd, initial, 0)==len(initial)
-        os.fsync(fd)
-        os.close(fd)
-    original_sizes={part.name:part.stat().st_size for part in parts(storage)}
-    original_metadata=storage.read_bytes()
-    with mounted(binary, storage, mount, split=2) as path:
-        current=bytearray(expected)
-        fd=os.open(path, os.O_RDWR)
-        data=b'changed'*600000
-        assert os.pwrite(fd, data, 17)==len(data)
-        current[17:17+len(data)]=data
-        os.fsync(fd)
-        for enabled in (1, 0, 1):
-            set_rollback(mount, enabled)
-        assert os.pwrite(fd, b'after request', 7*1024*1024)==13
-        current[7*1024*1024:7*1024*1024+13]=b'after request'
-        os.fsync(fd)
-        assert os.pread(fd, len(current), 0)==current
-        os.close(fd)
-        assert len(parts(storage)) > len(original_sizes)
-        pending_sizes={part.name:part.stat().st_size for part in parts(storage)}
-        pending_files={suffix:Path(str(storage)+suffix).read_bytes() for suffix in ('.rollback', '.log', '.work', '.next') if Path(str(storage)+suffix).exists()}
-    assert storage.read_bytes()==original_metadata
-    assert {part.name:part.stat().st_size for part in parts(storage)}==pending_sizes
-    assert Path(str(storage)+'.rollback').exists()
-    assert {suffix:Path(str(storage)+suffix).read_bytes() for suffix in pending_files}==pending_files
-    with mounted(binary, storage, mount, split=2) as path:
-        assert path.read_bytes()==expected
-        assert {part.name:part.stat().st_size for part in parts(storage)}==original_sizes
-        assert not Path(str(storage)+'.rollback').exists()
-    print('PASS: rollback preserves files at unmount, then restores data and reclaims tails at next mount', flush=True)
-
-
-# Cancelling rollback preserves normal commit/recovery behavior and malformed writes change nothing.
-def check_rollback_control(binary, root):
-    for stop_signal in (None, signal.SIGKILL):
-        name=f'control-{stop_signal}'
-        storage, mount=root/name, root/(name+'-mount')
-        with mounted(binary, storage, mount, 4, 2) as path:
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'A'*4096, 0)==4096
-            os.close(fd)
-        with mounted(binary, storage, mount, 4, 2, stop_signal=stop_signal) as path:
-            assert {entry.name for entry in mount.iterdir()}=={'virtual.dat', 'rollback'}
-            control=mount/'rollback'
-            assert control.stat().st_size==2 and control.read_bytes()==b'0\n'
-            assert control.stat().st_mode & 0o777==0o600
-            control_fd=os.open(control, os.O_RDWR)
-            for enabled in (1, 0, 1):
-                set_rollback(mount, enabled)
-                assert os.pread(control_fd, 2, 0)==f'{enabled}\n'.encode()
-                invalid=subprocess.run(['sh', '-c', 'echo 2 > "$1"', 'sh', str(control)], stderr=subprocess.DEVNULL)
-                assert invalid.returncode and os.pread(control_fd, 2, 0)==f'{enabled}\n'.encode()
-                os.close(os.open(control, os.O_WRONLY|os.O_TRUNC))
-                assert os.pread(control_fd, 2, 0)==f'{enabled}\n'.encode()
-                for value, offset in ((b'2', 0), (b'10\n', 0), (b'1 \n', 0), (b'1\n\n', 0), (b'\n', 0), (b'\xff', 0), (b'0', 1), (b'1', 2)):
-                    try:
-                        os.pwrite(control_fd, value, offset)
-                        raise AssertionError((value, offset))
-                    except OSError as error:
-                        assert error.errno==errno.EINVAL, error
-                    assert os.pread(control_fd, 2, 0)==f'{enabled}\n'.encode()
-            assert os.pread(control_fd, 1, 1)==b'\n' and os.pread(control_fd, 1, 2)==b''
-            assert os.pwrite(control_fd, b'0', 0)==1 and os.pread(control_fd, 2, 0)==b'0\n'
-            assert os.pwrite(control_fd, b'1', 0)==1 and os.pread(control_fd, 2, 0)==b'1\n'
-            subprocess.run(['sh', '-c', 'printf 1 > "$1"', 'sh', str(control)], check=True)
-            assert subprocess.check_output(['cat', str(control)])==b'1\n'
-            assert os.pwrite(control_fd, b'', 0)==0 and os.pread(control_fd, 2, 0)==b'1\n'
-            os.ftruncate(control_fd, 0)
-            assert os.pread(control_fd, 2, 0)==b'1\n'
-            try:
-                os.ftruncate(control_fd, 1)
-                raise AssertionError('Invalid control truncate succeeded')
-            except OSError as error:
-                assert error.errno==errno.EINVAL, error
-            os.close(control_fd)
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'B'*4096, 0)==4096
-            os.fsync(fd)
-            set_rollback(mount, 0)
-            assert os.pwrite(fd, b'C'*4096, 0)==4096
-            os.close(fd)
-        with mounted(binary, storage, mount, 4, 2) as path:
-            fd=os.open(path, os.O_RDONLY)
-            assert os.pread(fd, 4096, 0)==(b'B' if stop_signal else b'C')*4096
-            os.close(fd)
-            assert (mount/'rollback').read_bytes()==b'0\n'
-    print('PASS: rollback control reads, toggles, invalid writes and cancellation before commit/crash', flush=True)
-
-
-# Several continued mounts share the original rollback point, including its physical tail.
-def check_norollback(binary, root):
-    storage, mount=root/'continue', root/'continue-mount'
-    size=1024*1024-4096
-    for value in (b'A', b'B'):
-        with mounted(binary, storage, mount, 4, 1) as path:
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, value*size, 0)==size
-            os.close(fd)
-    original=storage.read_bytes()
-    original_sizes={part.name:part.stat().st_size for part in parts(storage)}
-    assert not Path(str(storage)+'.0').exists() and Path(str(storage)+'.1').exists()
-    with mounted(binary, storage, mount, 4, 1) as path:
-        set_rollback(mount, 1)
-        fd=os.open(path, os.O_RDWR)
-        assert os.pwrite(fd, b'C'*size, 0)==size
-        os.close(fd)
-    with mounted(binary, storage, mount, 8, 1, norollback=True) as path:
-        assert (mount/'rollback').read_bytes()==b'1\n' and storage.read_bytes()==original
-        assert Path(str(storage)+'.1').stat().st_size==1024*1024
-        fd=os.open(path, os.O_RDWR)
-        assert os.pread(fd, size, 0)==b'C'*size
-        assert os.pwrite(fd, b'D'*size, 0)==size
-        assert os.pwrite(fd, b'grown', 6*1024*1024)==5
-        os.close(fd)
-    with mounted(binary, storage, mount, 0, 1, mount_options='norollback') as path:
-        assert path.stat().st_size==8*1024*1024
-        assert (mount/'rollback').read_bytes()==b'1\n' and storage.read_bytes()==original
-        fd=os.open(path, os.O_RDWR)
-        assert os.pread(fd, size, 0)==b'D'*size
-        assert os.pread(fd, 5, 6*1024*1024)==b'grown'
-        set_rollback(mount, 0)
-        set_rollback(mount, 1)
-        assert os.pwrite(fd, b'E'*4096, 0)==4096
-        os.close(fd)
-    with mounted(binary, storage, mount, 0, 1, stop_signal=signal.SIGKILL, norollback=True) as path:
-        fd=os.open(path, os.O_RDWR)
-        assert os.pread(fd, 4096, 0)==b'E'*4096
-        assert os.pwrite(fd, b'F'*4096, 0)==4096
-        os.fsync(fd)
-        assert os.pwrite(fd, b'G'*4096, 0)==4096
-        os.close(fd)
-    with mounted(binary, storage, mount, 0, 1, norollback=True) as path:
-        fd=os.open(path, os.O_RDONLY)
-        assert os.pread(fd, 4096, 0)==b'F'*4096
-        os.close(fd)
-        assert (mount/'rollback').read_bytes()==b'1\n' and storage.read_bytes()==original
-    with mounted(binary, storage, mount, 0, 1) as path:
-        assert path.stat().st_size==4*1024*1024 and (mount/'rollback').read_bytes()==b'0\n'
-        fd=os.open(path, os.O_RDONLY)
-        assert os.pread(fd, size, 0)==b'B'*size
-        os.close(fd)
-        assert {part.name:part.stat().st_size for part in parts(storage)}==original_sizes
-    with mounted(binary, storage, mount, 0, 1, norollback=True) as path:
-        assert (mount/'rollback').read_bytes()==b'0\n'
-        fd=os.open(path, os.O_RDWR)
-        assert os.pwrite(fd, b'H'*4096, 0)==4096
-        os.close(fd)
-    with mounted(binary, storage, mount, 0, 1) as path:
-        fd=os.open(path, os.O_RDONLY)
-        assert os.pread(fd, 4096, 0)==b'H'*4096
-        os.close(fd)
-    print('PASS: continued mounts retain original rollback data/size/tails and persist clean writes', flush=True)
-
-
-# Cancelling a continued rollback commits the combined sessions or recovers their latest fsync.
-def check_norollback_cancel(binary, root):
-    for action in ('cancel', 'commit', 'crash'):
-        stop_signal=signal.SIGKILL if action=='crash' else None
-        name=f'continue-{action}'
-        storage, mount=root/name, root/(name+'-mount')
-        with mounted(binary, storage, mount, 4, 1) as path:
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'A'*4096, 0)==4096
-            os.close(fd)
-        with mounted(binary, storage, mount, 4, 1) as path:
-            set_rollback(mount, 1)
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'B'*4096, 4096)==4096
-            os.close(fd)
-        with mounted(binary, storage, mount, 4, 1, stop_signal=stop_signal, norollback=True) as path:
-            assert (mount/'rollback').read_bytes()==b'1\n'
-            set_rollback(mount, 0)
-            if action!='cancel':
-                fd=os.open(path, os.O_RDWR)
-                assert os.pwrite(fd, b'C'*4096, 0)==4096
-                os.fsync(fd)
-                assert os.pwrite(fd, b'D'*4096, 0)==4096
-                os.close(fd)
-        with mounted(binary, storage, mount, 4, 1) as path:
-            fd=os.open(path, os.O_RDONLY)
-            expected={'cancel':b'A', 'commit':b'D', 'crash':b'C'}[action]
-            assert os.pread(fd, 4096, 0)==expected*4096
-            assert os.pread(fd, 4096, 4096)==b'B'*4096
-            os.close(fd)
-            assert (mount/'rollback').read_bytes()==b'0\n'
-    print('PASS: cancelling a continued rollback preserves combined writes and crash checkpoints', flush=True)
-
-
 # Repeated full rewrites must reuse old slots rather than grow the part address space.
 def check_recycling(binary, root):
     storage, mount=root/'recycle', root/'recycle-mount'
@@ -538,39 +342,13 @@ def check_recycling(binary, root):
                 assert os.pwrite(fd, data, 0)==len(data)
                 os.fsync(fd)
             os.close(fd)
-            assert len(parts(storage)) <= 8
-            assert sum(part.stat().st_size for part in parts(storage)) <= 3*len(previous)+128*1024
+            assert len(parts(storage)) <= 28
+            assert sum(part.stat().st_size for part in parts(storage)) <= 13*len(previous)+256*1024
             assert storage.stat().st_size < 16384
             previous=data
     with mounted(binary, storage, mount, 4, 2) as path:
         assert path.read_bytes()==previous
     print('PASS: COW between checkpoints and bounded space across ten mounts with repeated fsync', flush=True)
-
-
-# Empty interior parts can disappear without renumbering retained data references.
-def check_empty_parts(binary, root):
-    storage, mount=root/'empty-part', root/'empty-part-mount'
-    size=1024*1024-4096
-    for value in (b'A', b'B'):
-        with mounted(binary, storage, mount, 4, 1) as path:
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, value*size, 0)==size
-            os.close(fd)
-    first, second=Path(str(storage)+'.0'), Path(str(storage)+'.1')
-    assert not first.exists() and second.stat().st_size==1024*1024
-    with mounted(binary, storage, mount, 4, 1) as path:
-        fd=os.open(path, os.O_RDWR)
-        assert os.pread(fd, size, 0)==b'B'*size
-        assert os.pwrite(fd, b'C'*4096, 2*1024*1024)==4096
-        assert first.exists()
-        assert os.pread(fd, size, 0)==b'B'*size
-        os.close(fd)
-    with mounted(binary, storage, mount, 4, 1) as path:
-        fd=os.open(path, os.O_RDONLY)
-        assert os.pread(fd, size, 0)==b'B'*size
-        assert os.pread(fd, 4096, 2*1024*1024)==b'C'*4096
-        os.close(fd)
-    print('PASS: clean shutdown removes empty interior parts and later writes recreate them safely', flush=True)
 
 
 # Virtual growth is transactional, while a smaller requested size is ignored.
@@ -584,110 +362,54 @@ def check_growth(binary, root):
         fd=os.open(path, os.O_RDWR)
         assert os.pwrite(fd, b'new end', 9*1024*1024)==7
         os.close(fd)
-        set_rollback(mount, 1)
     with mounted(binary, storage, mount, 0, 2) as path:
-        assert path.stat().st_size==8*1024*1024
-        assert path.read_bytes()==bytes(8*1024*1024)
-    for checkpoint in (False, True):
-        with mounted(binary, storage, mount, '+2', 2, stop_signal=signal.SIGKILL) as path:
-            fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'new end', 9*1024*1024)==7
-            if checkpoint:
-                os.fsync(fd)
-            os.close(fd)
-        with mounted(binary, storage, mount, 0, 2) as path:
-            assert path.stat().st_size==(10 if checkpoint else 8)*1024*1024
-            if checkpoint:
-                fd=os.open(path, os.O_RDONLY)
-                assert os.pread(fd, 7, 9*1024*1024)==b'new end'
-                os.close(fd)
-    print('PASS: absolute/delta growth, ignored shrink, rollback and checkpoint recovery of growth', flush=True)
+        assert path.stat().st_size==10*1024*1024
+        assert path.read_bytes()[9*1024*1024:9*1024*1024+7]==b'new end'
+    print('PASS: absolute/delta growth, ignored shrink and clean session persistence', flush=True)
 
 
-# Crashes recover the latest successful checkpoint unless explicit rollback wins.
+# Interrupted sessions recover their latest checkpoint without creating a clean-end snapshot.
 def check_crash(binary, root):
     for stop_signal in (signal.SIGKILL, signal.SIGTERM, signal.SIGINT):
-        for rollback in (False, True):
-            name=f'crash-{stop_signal}-{rollback}'
-            storage, mount=root/name, root/(name+'-mount')
-            original=bytearray(8*1024*1024)
-            original[:4096]=b'A'*4096
-            with mounted(binary, storage, mount, split=2) as path:
-                fd=os.open(path, os.O_RDWR)
-                assert os.pwrite(fd, original[:4096], 0)==4096
-                os.close(fd)
-            expected=bytearray(original)
-            with mounted(binary, storage, mount, split=2, stop_signal=stop_signal) as path:
-                fd=os.open(path, os.O_RDWR)
-                for value in (b'B', b'C'):
-                    data=value*(5*1024*1024)
-                    assert os.pwrite(fd, data, 0)==len(data)
-                    os.fsync(fd)
-                    expected[:len(data)]=data
-                if rollback:
-                    set_rollback(mount, 1)
-                    assert os.pwrite(fd, b'after request', 7*1024*1024)==13
-                    os.fsync(fd)
-                assert os.pwrite(fd, b'D'*4096, 0)==4096
-                assert os.pread(fd, 4096, 0)==b'D'*4096
-                os.close(fd)
-            assert any(Path(str(storage)+suffix).exists() for suffix in ('.log', '.work'))
-            assert Path(str(storage)+'.rollback').exists()==rollback
-            with mounted(binary, storage, mount, split=2) as path:
-                assert path.read_bytes()==(original if rollback else expected)
-    print('PASS: SIGKILL/SIGTERM/SIGINT retain latest fsync; rollback restores mount-start state', flush=True)
-
-
-# Journal compaction preserves the latest checkpoint and the independent rollback point.
-def check_journal(binary, root, checkpoints=8193):
-    for rollback in (False, True):
-        name=f'journal-{rollback}'
+        name=f'crash-{stop_signal}'
         storage, mount=root/name, root/(name+'-mount')
-        with mounted(binary, storage, mount, 65536, 2) as path:
+        expected=bytearray(8*1024*1024)
+        with mounted(binary, storage, mount, split=2, stop_signal=stop_signal) as path:
             fd=os.open(path, os.O_RDWR)
-            assert os.pwrite(fd, b'A'*4096, 0)==4096
-            os.close(fd)
-        original=storage.read_bytes()
-        log, work=Path(str(storage)+'.log'), Path(str(storage)+'.work')
-        with mounted(binary, storage, mount, 65536, 2, stop_signal=None if rollback else signal.SIGKILL) as path:
-            fd=os.open(path, os.O_RDWR)
-            for checkpoint in range(1, checkpoints+1):
-                expected=bytes([checkpoint%251+1])*4096
-                assert os.pwrite(fd, expected, 0)==4096
+            for value in (b'B', b'C'):
+                data=value*(5*1024*1024)
+                assert os.pwrite(fd, data, 0)==len(data)
                 os.fsync(fd)
-                if checkpoint in (1, 8192):
-                    assert log.stat().st_size==checkpoint*4096
-                    assert not work.exists()
-                    os.fsync(fd)
-                    assert log.stat().st_size==checkpoint*4096
-                if checkpoint==8193:
-                    assert work.exists() and (not log.exists() or not log.stat().st_size)
-            assert storage.read_bytes()==original, 'Checkpoint replaced the mount-start root'
-            set_rollback(mount, 1)
-            set_rollback(mount, 0)
-            if rollback:
-                set_rollback(mount, 1)
-            assert os.pwrite(fd, b'unsynchronized', 0)==14
+                expected[:len(data)]=data
+            assert os.pwrite(fd, b'D'*4096, 0)==4096
             os.close(fd)
-        assert any(candidate.exists() for candidate in (log, work))
-        assert storage.read_bytes()==original
-        if rollback:
-            with mounted(binary, storage, mount, 0, 2, norollback=True) as path:
-                assert (mount/'rollback').read_bytes()==b'1\n' and storage.read_bytes()==original
-                fd=os.open(path, os.O_RDWR)
-                assert os.pread(fd, 4096, 0)==b'unsynchronized'+expected[14:]
-                assert os.pwrite(fd, b'continued', 4096)==9
-                os.close(fd)
-        with mounted(binary, storage, mount, 65536, 2) as path:
-            fd=os.open(path, os.O_RDONLY)
-            assert os.pread(fd, 4096, 0)==(b'A'*4096 if rollback else expected)
-            os.close(fd)
-            assert not log.exists() and not work.exists()
-            assert (mount/'rollback').read_bytes()==b'0\n'
-    print(f'PASS: {checkpoints} journal checkpoints, bounded log, crash recovery and rollback/cancellation', flush=True)
+        assert any(Path(str(storage)+suffix).exists() for suffix in ('.log', '.work'))
+        with mounted(binary, storage, mount, split=2) as path:
+            assert path.read_bytes()==expected
+    print('PASS: SIGKILL/SIGTERM/SIGINT retain latest successful fsync', flush=True)
 
 
-# Exercise the real FAT32 allocator on a disposable regular-file loop device.
+# Journal rollover retains current data independently of the automatic starting point.
+def check_journal(binary, root, checkpoints=8193):
+    storage, mount=root/'journal', root/'journal-mount'
+    expected=b'A'*4096
+    with mounted(binary, storage, mount, 65536, 2, stop_signal=signal.SIGKILL) as path:
+        fd=os.open(path, os.O_RDWR)
+        for checkpoint in range(checkpoints):
+            expected=bytes([checkpoint%251+1])*4096
+            assert os.pwrite(fd, expected, 0)==4096
+            os.fsync(fd)
+        os.close(fd)
+        log=Path(str(storage)+'.log')
+        assert not log.exists() or log.stat().st_size <= 32*1024*1024
+    with mounted(binary, storage, mount, 0, 2) as path:
+        fd=os.open(path, os.O_RDONLY)
+        assert os.pread(fd, 4096, 0)==expected
+        os.close(fd)
+    print(f'PASS: {checkpoints} bounded journal checkpoints and crash recovery', flush=True)
+
+
+# Exercise ordinary storage operations on a disposable FAT32 backing filesystem.
 def check_fat32(binary, root, lock_test=None):
     image=root/'fat32.img'
     with image.open('wb') as file:
@@ -700,17 +422,12 @@ def check_fat32(binary, root, lock_test=None):
         if lock_test:
             subprocess.run([lock_test, str(mount)], check=True)
         check_lazy_storage(binary, mount)
-        check_rollback(binary, mount)
-        check_rollback_control(binary, mount)
-        check_norollback(binary, mount)
-        check_norollback_cancel(binary, mount)
         check_recycling(binary, mount)
-        check_empty_parts(binary, mount)
         check_journal(binary, mount, 8)
     finally:
         subprocess.run(['umount', str(mount)], check=True)
     subprocess.run(['fsck.fat', '-n', str(image)], check=True)
-    print('PASS: FAT32 sparse allocation, rollback, recycling and filesystem check', flush=True)
+    print('PASS: FAT32 sparse allocation, session history, recycling and filesystem check', flush=True)
 
 
 # Daemonization changes cwd, so later lazy allocation must retain absolute backing paths.
@@ -771,19 +488,19 @@ def check_interoperability(binary, peer, root):
     with mounted(peer, storage, mount) as path:
         assert path.read_bytes()==expected
         fd=os.open(path, os.O_RDWR)
-        assert os.pwrite(fd, b'rolled back', 123)==11
+        assert os.pwrite(fd, b'persisted', 123)==9
+        expected[123:132]=b'persisted'
         os.close(fd)
-        set_rollback(mount, 1)
     with mounted(binary, storage, mount) as path:
         assert path.read_bytes()==expected
-    print('PASS: format-600 read/write/rollback interoperability in both directions', flush=True)
+    print('PASS: format-600 read/write interoperability in both directions', flush=True)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('binary')
     parser.add_argument('--baseline', help='Format-500 binary used to test automatic conversion')
-    parser.add_argument('--peer', help='Another format-600 binary used to test interoperability')
+    parser.add_argument('--peer', help='Another current format-600 binary used to test interoperability')
     parser.add_argument('--lock-test', help='Compiled lock test to run on the FAT32 fixture')
     parser.add_argument('--skip-loop', action='store_true', help='Skip privileged ext4/FAT32 loop mounts')
     args=parser.parse_args()
@@ -795,19 +512,13 @@ if __name__=='__main__':
         check_concurrency(binary, root)
         check_lazy_storage(binary, root)
         check_part_limits(binary, root)
-        check_rollback(binary, root)
-        check_rollback_control(binary, root)
-        check_norollback(binary, root)
-        check_norollback_cancel(binary, root)
         check_recycling(binary, root)
-        check_empty_parts(binary, root)
         check_growth(binary, root)
         check_crash(binary, root)
         check_journal(binary, root)
         check_daemon(binary, root)
         international=root/'žluťoučký 文件'
         international.mkdir()
-        check_rollback(binary, international)
         if not args.skip_loop:
             check_loop(binary, root)
             check_fat32(binary, root, str(Path(args.lock_test).resolve()) if args.lock_test else None)

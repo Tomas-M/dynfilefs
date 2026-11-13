@@ -6,7 +6,7 @@
 
 struct block_map
 {
-    uint64_t *base, *checkpoint, *used, *free_bits;
+    uint64_t *read_pins, *checkpoint, *used, *snapshots, *free_bits;
     size_t words, capacity;
     uint64_t slots;
     size_t *free_next, *free_prev, *dirty_words;
@@ -27,6 +27,9 @@ void map_reserve(struct block_map *map, uint64_t first, uint64_t count);
 void map_release(struct block_map *map, uint64_t first, uint64_t count);
 int map_protected(const struct block_map *map, uint64_t slot);
 void map_checkpoint(struct block_map *map);
+void map_set_snapshots(struct block_map *map, const uint64_t *bits);
+void map_pin_read(struct block_map *map, uint64_t first, uint64_t count);
+uint64_t map_reusable_bytes(const struct block_map *map);
 
 // Test a slot within the caller's bitmap bounds.
 static inline int map_test(const uint64_t *bits, uint64_t slot)

@@ -84,10 +84,10 @@ int __wrap_fsync(int fd)
 }
 
 // Use more distinct index pages than the configured cache can retain.
-static struct storage *open_store(const char *path, int norollback)
+static struct storage *open_store(const char *path, const char *restore)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, (REGION_COUNT+1)*REGION_SIZE, 0, 4*1024*1024, norollback));
+    assert(!storage_open(&storage, path, (REGION_COUNT+1)*REGION_SIZE, 0, 4*1024*1024, restore));
     return storage;
 }
 
@@ -127,7 +127,7 @@ static void check_pressure(const char *path)
     size_t bytes=(size_t)REGION_COUNT*MODEL_SIZE;
     unsigned char *expected=calloc(1, bytes), *durable=malloc(bytes);
     assert(expected && durable);
-    struct storage *storage=open_store(path, 0);
+    struct storage *storage=open_store(path, NULL);
     sync_calls=0;
     for (size_t region=0; region < REGION_COUNT; region++)
     {
@@ -150,34 +150,32 @@ static void check_pressure(const char *path)
     check_regions(storage, expected, 0);
     assert(!sync_calls);
     storage_close(storage);
-    storage=open_store(path, 0);
+    storage=open_store(path, NULL);
     check_regions(storage, durable, 1);
     assert(!storage_finish(storage));
     storage_close(storage);
 
-    storage=open_store(path, 0);
+    storage=open_store(path, NULL);
+    assert(!storage_snapshot_create(storage, "durable"));
     memcpy(expected, durable, bytes);
     change_regions(storage, expected, 4096-31, 3);
-    assert(!storage_set_rollback(storage, 1));
     assert(!storage_sync(storage) && !storage_finish(storage));
     storage_close(storage);
-    storage=open_store(path, 1);
-    assert(storage_get_rollback(storage));
+    storage=open_store(path, NULL);
     check_regions(storage, expected, 0);
     change_regions(storage, expected, MODEL_SIZE-99, 4);
     assert(!storage_sync(storage));
     storage_close(storage);
-    storage=open_store(path, 1);
+    storage=open_store(path, NULL);
     check_regions(storage, expected, 1);
-    assert(storage_get_rollback(storage) && !storage_finish(storage));
+    assert(!storage_finish(storage));
     storage_close(storage);
-    storage=open_store(path, 0);
-    assert(!storage_get_rollback(storage));
+    storage=open_store(path, "durable");
     check_regions(storage, durable, 0);
     assert(!storage_finish(storage));
     storage_close(storage);
     free(expected); free(durable);
-    puts("PASS: cache pressure, dirty reloads, partial writes, checkpoint recovery and deferred rollback");
+    puts("PASS: cache pressure, dirty reloads, partial writes, checkpoint recovery and named restores");
 }
 
 // These region numbers collide under the documented stripe hash for both test cache sizes.
@@ -189,7 +187,7 @@ static off_t collision_offset(size_t index)
 // Failed or partially written victims must remain readable even while backing writes fail.
 static void check_eviction_fault(const char *path, ssize_t budget)
 {
-    struct storage *storage=open_store(path, 0);
+    struct storage *storage=open_store(path, NULL);
     unsigned char input[4096], output[4096];
     for (size_t i=0; i < STRIPE_PAGES; i++)
     {
@@ -223,7 +221,7 @@ static void check_eviction_fault(const char *path, ssize_t budget)
     assert(!storage_finish(storage));
     write_limit=0;
     storage_close(storage);
-    storage=open_store(path, 0);
+    storage=open_store(path, NULL);
     for (size_t i=0; i <= STRIPE_PAGES; i++)
     {
         fill_pattern(input, sizeof(input), i);
@@ -238,7 +236,7 @@ static void check_eviction_fault(const char *path, ssize_t budget)
 // A failed incoming leaf read must leave every previous resident usable without a reload.
 static void check_read_fault(const char *path)
 {
-    struct storage *storage=open_store(path, 0);
+    struct storage *storage=open_store(path, NULL);
     unsigned char input[4096], value;
     for (size_t i=0; i <= STRIPE_PAGES; i++)
     {
@@ -247,7 +245,7 @@ static void check_read_fault(const char *path)
     }
     assert(!storage_finish(storage));
     storage_close(storage);
-    storage=open_store(path, 0);
+    storage=open_store(path, NULL);
     for (size_t i=0; i < STRIPE_PAGES; i++)
         assert(storage_read(storage, &value, 1, collision_offset(i))==1);
     value=0x5e;
@@ -304,7 +302,7 @@ static void check_parallel(const char *path)
 {
     unsigned char *expected=calloc(REGION_COUNT, MODEL_SIZE);
     assert(expected);
-    struct storage *storage=open_store(path, 0);
+    struct storage *storage=open_store(path, NULL);
     pthread_t threads[4];
     pthread_barrier_t barrier;
     struct writer_args args[4];
@@ -326,7 +324,7 @@ static void check_parallel(const char *path)
     check_regions(storage, expected, 1);
     assert(!storage_finish(storage));
     storage_close(storage);
-    storage=open_store(path, 0);
+    storage=open_store(path, NULL);
     check_regions(storage, expected, 0);
     assert(!storage_finish(storage));
     storage_close(storage);

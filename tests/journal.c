@@ -43,7 +43,7 @@ static void check_dirty_words(const char *path)
 {
     uint64_t root[3]={1, 0, 0}, bits[6]={1, 2, 4, 8, 0, 0}, previous[6], length=0;
     size_t dirty_roots[2]={1, 2}, dirty_words[3]={5, 3, 1};
-    struct snapshot snapshot={4*1024*1024, 1024*1024, 256, 2, root, bits, 20};
+    struct snapshot snapshot={.size=4*1024*1024, .part_size=1024*1024, .slots=256, .root_count=2, .root=root, .bits=bits, .sequence=20};
     assert(!snapshot_publish(path, &snapshot));
     memcpy(previous, bits, sizeof(bits));
     int log_fd=-1, replayed;
@@ -110,11 +110,12 @@ int main(int argc, char **argv)
     uint64_t root[2]={1, 0}, bits=3, previous=bits, length=0;
     size_t dirty[2]={0, 1}, dirty_word=0;
     int log_fd=-1;
-    struct snapshot snapshot={4*1024*1024, 1024*1024, 4, 2, root, &bits, 7};
+    struct snapshot snapshot={.size=4*1024*1024, .part_size=1024*1024, .slots=4, .root_count=2, .root=root, .bits=&bits, .sequence=7};
     assert(!snapshot_publish(path, &snapshot));
     for (int i=0; i < 3; i++)
     {
         snapshot.sequence++;
+        snapshot.parent=snapshot.sequence;
         snapshot.slots=(uint64_t)(i+1)*4;
         root[0]=(uint64_t)i*4+3;
         root[1]=i ? (uint64_t)i*4+1 : 0;
@@ -131,7 +132,7 @@ int main(int argc, char **argv)
     int replayed;
     struct snapshot loaded=load_base(path);
     assert(loaded.sequence==7 && !journal_replay(path, &loaded, &replayed) && replayed);
-    assert(loaded.sequence==10 && loaded.root[0]==11 && loaded.root[1]==9 && loaded.bits[0]==0xf00);
+    assert(loaded.parent==10 && loaded.sequence==10 && loaded.root[0]==11 && loaded.root[1]==9 && loaded.bits[0]==0xf00);
     snapshot_free(&loaded);
     for (int torn=0; torn < 2; torn++)
     {
@@ -148,7 +149,7 @@ int main(int argc, char **argv)
         memcpy(changed, bytes, sizeof(bytes));
         if (!malformed) changed[100]^=1;
         if (malformed==1) change_field(changed+4096, 24, 10);
-        if (malformed==2) change_field(changed, 64, UINT64_MAX);
+        if (malformed==2) change_field(changed, 72, UINT64_MAX);
         if (malformed==3) change_field(changed, 48, UINT64_MAX);
         if (malformed==4) change_field(changed, 32, (JOURNAL_LIMIT/8+3)*4096*512);
         if (malformed==5) change_field(changed, 40, UINT64_MAX);

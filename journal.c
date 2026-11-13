@@ -12,7 +12,7 @@
 struct journal_header
 {
     char magic[8];
-    uint64_t length, checksum, sequence, size, slots, roots, words;
+    uint64_t length, checksum, sequence, size, slots, roots, words, parent;
 };
 
 // Append absolute metadata changes only after their referenced data has been synced.
@@ -24,6 +24,7 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     size_t metadata_length;
     int result=snapshot_length(snapshot, &metadata_length);
     if (result) return result;
+    if (!snapshot->size || snapshot->id) return -EINVAL;
     if (!snapshot->sequence || *length%4096 || *length > JOURNAL_LIMIT) return -EINVAL;
     if (snapshot->root_count!=(snapshot->size-1)/(4096*512)+1) return -EINVAL;
     size_t words=(size_t)((snapshot->slots+63)/64), changed=0;
@@ -43,10 +44,11 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     unsigned char *bytes=calloc(1, size);
     if (!bytes) return -ENOMEM;
     struct journal_header *header=(struct journal_header *)bytes;
-    memcpy(header->magic, "DYNLOG01", 8);
+    memcpy(header->magic, "DYNLOG02", 8);
     header->length=htole64(size); header->sequence=htole64(snapshot->sequence);
     header->size=htole64(snapshot->size); header->slots=htole64(snapshot->slots);
     header->roots=htole64(dirty_root_count); header->words=htole64(changed);
+    header->parent=htole64(snapshot->parent);
     uint64_t *pairs=(uint64_t *)(bytes+sizeof(*header));
     for (size_t i=0; i < dirty_root_count; i++)
     {
@@ -82,7 +84,7 @@ static size_t complete_record(unsigned char *bytes, size_t remaining)
     if (remaining < sizeof(struct journal_header)) return 0;
     struct journal_header *header=(struct journal_header *)bytes;
     uint64_t size=le64toh(header->length);
-    if (memcmp(header->magic, "DYNLOG01", 8) || size < 4096 || size%4096 || size > remaining) return 0;
+    if (memcmp(header->magic, "DYNLOG02", 8) || size < 4096 || size%4096 || size > remaining) return 0;
     uint64_t saved=header->checksum;
     header->checksum=0;
     uint64_t hash=metadata_checksum(bytes, (size_t)size);
@@ -94,7 +96,9 @@ static size_t complete_record(unsigned char *bytes, size_t remaining)
 static int apply_record(unsigned char *bytes, size_t length, struct snapshot *snapshot, int apply)
 {
     struct journal_header *header=(struct journal_header *)bytes;
-    struct snapshot next={.size=le64toh(header->size), .part_size=snapshot->part_size, .slots=le64toh(header->slots)};
+    struct snapshot next={.size=le64toh(header->size), .part_size=snapshot->part_size,
+                          .slots=le64toh(header->slots), .parent=le64toh(header->parent)};
+    if (!next.size) return -EIO;
     size_t metadata_length;
     int result=snapshot_length(&next, &metadata_length);
     if (result) return result;
@@ -136,6 +140,7 @@ static int apply_record(unsigned char *bytes, size_t length, struct snapshot *sn
     if (next.slots%64) snapshot->bits[next.slots/64]&=(UINT64_C(1)<<(next.slots%64))-1;
     snapshot->size=next.size; snapshot->slots=next.slots; snapshot->root_count=root_count;
     snapshot->sequence=le64toh(header->sequence);
+    snapshot->parent=next.parent;
     return 0;
 }
 
@@ -182,7 +187,7 @@ int journal_replay(const char *path, struct snapshot *snapshot, int *replayed)
     return result;
 }
 
-// Remove obsolete records only after their replacement or rollback choice is durable.
+// Remove obsolete records only after their replacement is durable.
 int journal_reset(const char *path, int *fd)
 {
     // Invalidate before close, and never keep a descriptor to an unlinked journal.

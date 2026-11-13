@@ -21,7 +21,6 @@ static ssize_t log_write_budget=-1;
 static size_t write_limit;
 static size_t measured_writes;
 static int measure_writes;
-static const char *fail_after_marker;
 static int fail_sync, fail_log_sync, fail_directory_sync, fail_rename, fail_after_rename, sync_calls, delay_writes, active_writes, overlap, stop_writes;
 
 ssize_t __real_pwrite(int fd, const void *buffer, size_t size, off_t offset);
@@ -83,14 +82,13 @@ int __wrap_fsync(int fd)
 {
     __atomic_add_fetch(&sync_calls, 1, __ATOMIC_RELAXED);
     if (fail_sync || fail_after_rename==2 || (fail_log_sync && log_descriptor(fd))) { errno=EIO; return -1; }
-    if (fail_directory_sync || fail_after_marker)
+    if (fail_directory_sync)
     {
         struct stat info;
         assert(!fstat(fd, &info));
         if (S_ISDIR(info.st_mode))
         {
             if (fail_directory_sync) { errno=EIO; return -1; }
-            if (access(fail_after_marker, F_OK) && errno==ENOENT) { errno=EIO; return -1; }
         }
     }
     return __real_fsync(fd);
@@ -109,7 +107,7 @@ int __wrap_rename(const char *source, const char *target)
 static struct storage *open_store(const char *path)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, IMAGE_SIZE, 0, MIB, 0));
+    assert(!storage_open(&storage, path, IMAGE_SIZE, 0, MIB, NULL));
     assert(storage_size(storage)==IMAGE_SIZE);
     return storage;
 }
@@ -126,7 +124,7 @@ static void check_bytes(struct storage *storage, const unsigned char *expected)
 // A successfully closed mount has no transaction, conversion or lock companions.
 static void check_clean_files(const char *path)
 {
-    const char *suffixes[]={".lock", ".log", ".work", ".next", ".migrate", ".rollback"};
+    const char *suffixes[]={".lock", ".log", ".work", ".next", ".migrate"};
     for (size_t i=0; i < sizeof(suffixes)/sizeof(*suffixes); i++)
     {
         char name[PATH_MAX];
@@ -217,272 +215,8 @@ static void check_faults(const char *path)
     assert(!storage_finish(storage));
     storage_close(storage);
     free(expected);
+    check_clean_files(path);
     puts("PASS: ENOSPC, short writes, failed checkpoints, finish publication and sync retry");
-}
-
-// Rollback overrides successful checkpoints and later writes after finish or interruption.
-static void check_rollback(const char *path)
-{
-    unsigned char *expected=calloc(1, IMAGE_SIZE), *appended=malloc(2*MIB), block[4096];
-    assert(expected && appended);
-    memset(appended, 0x54, 2*MIB);
-    memset(block, 0x31, sizeof(block));
-    struct storage *storage=open_store(path);
-    assert(storage_write(storage, block, sizeof(block), 123)==sizeof(block));
-    memcpy(expected+123, block, sizeof(block));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    char part[PATH_MAX], marker[PATH_MAX], lock[PATH_MAX], log[PATH_MAX];
-    assert(snprintf(part, sizeof(part), "%s.0", path) < (int)sizeof(part));
-    assert(snprintf(marker, sizeof(marker), "%s.rollback", path) < (int)sizeof(marker));
-    assert(snprintf(lock, sizeof(lock), "%s.lock", path) < (int)sizeof(lock));
-    assert(snprintf(log, sizeof(log), "%s.log", path) < (int)sizeof(log));
-    struct stat before, after;
-    assert(!stat(part, &before));
-    for (int finish=0; finish < 2; finish++)
-    {
-        storage=open_store(path);
-        memset(block, 0x73, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 7*MIB+71)==sizeof(block));
-        assert(storage_write(storage, appended, 2*MIB, 4*MIB)==2*MIB);
-        assert(!storage_sync(storage));
-        memset(block, 0x85, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-        assert(!storage_sync(storage));
-        assert(!storage_get_rollback(storage));
-        assert(!storage_set_rollback(storage, 1) && storage_get_rollback(storage));
-        assert(!storage_set_rollback(storage, 0) && !storage_get_rollback(storage));
-        memset(block, 0x96, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-        assert(!storage_sync(storage));
-        assert(!storage_set_rollback(storage, 1));
-        assert(storage_write(storage, block, sizeof(block), 3*MIB+17)==sizeof(block));
-        assert(!storage_sync(storage));
-        assert(storage_write(storage, block, sizeof(block), 6*MIB)==sizeof(block));
-        struct stat pending;
-        assert(!stat(part, &pending));
-        if (finish) assert(!storage_finish(storage));
-        storage_close(storage);
-        if (finish)
-        {
-            assert(access(lock, F_OK) && errno==ENOENT);
-            assert(!access(marker, F_OK) && !access(log, F_OK));
-            assert(!stat(part, &after) && after.st_size==pending.st_size);
-        }
-        storage=open_store(path);
-        assert(!storage_get_rollback(storage));
-        check_bytes(storage, expected);
-        assert(!stat(part, &after) && after.st_size==before.st_size);
-        assert(!storage_finish(storage));
-        storage_close(storage);
-        check_clean_files(path);
-    }
-    free(expected); free(appended);
-    puts("PASS: rollback remains pending at close and restores data and tails only at next open");
-}
-
-// Cancelling a request preserves checkpoints; failed marker flushes remain retryable.
-static void check_rollback_cancel(const char *path)
-{
-    unsigned char *expected=calloc(1, IMAGE_SIZE), block[4096];
-    char marker[PATH_MAX];
-    assert(expected && snprintf(marker, sizeof(marker), "%s.rollback", path) < (int)sizeof(marker));
-    for (int finish=0; finish < 2; finish++)
-    {
-        struct storage *storage=open_store(path);
-        assert(!storage_get_rollback(storage));
-        memset(block, 'A'+finish, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 19)==sizeof(block));
-        assert(!storage_sync(storage));
-        fail_sync=1;
-        assert(storage_set_rollback(storage, 1)==-EIO);
-        assert(storage_get_rollback(storage) && !access(marker, F_OK));
-        fail_sync=0; sync_calls=0;
-        assert(!storage_set_rollback(storage, 1) && sync_calls==2);
-        fail_directory_sync=1;
-        assert(storage_set_rollback(storage, 0)==-EIO);
-        assert(!storage_get_rollback(storage) && access(marker, F_OK) && errno==ENOENT);
-        fail_directory_sync=0; sync_calls=0;
-        assert(!storage_set_rollback(storage, 0) && sync_calls==1);
-        fail_directory_sync=1;
-        assert(storage_set_rollback(storage, 1)==-EIO);
-        assert(storage_get_rollback(storage) && !access(marker, F_OK));
-        fail_directory_sync=0; sync_calls=0;
-        assert(!storage_set_rollback(storage, 1) && sync_calls==2);
-        memset(block, 'C'+finish, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 19)==sizeof(block));
-        assert(!storage_sync(storage));
-        memcpy(expected+19, block, sizeof(block));
-        assert(!storage_set_rollback(storage, 0) && !storage_get_rollback(storage));
-        assert(access(marker, F_OK) && errno==ENOENT);
-        memset(block, 'E'+finish, sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 19)==sizeof(block));
-        if (finish)
-        {
-            assert(!storage_finish(storage));
-            memcpy(expected+19, block, sizeof(block));
-        }
-        storage_close(storage);
-        storage=open_store(path);
-        assert(!storage_get_rollback(storage));
-        check_bytes(storage, expected);
-        assert(!storage_finish(storage));
-        storage_close(storage);
-    }
-    free(expected);
-    puts("PASS: rollback cancellation, checkpoint recovery and failed marker flush retries");
-}
-
-// Continued mounts keep the original baseline while clean exits preserve all current writes.
-static void check_norollback(const char *path)
-{
-    unsigned char *expected=calloc(1, IMAGE_SIZE), block[4096];
-    struct storage *storage=NULL;
-    assert(expected && !storage_open(&storage, path, IMAGE_SIZE, 0, MIB, 1));
-    assert(!storage_get_rollback(storage));
-    memset(block, 'A', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    storage=open_store(path);
-    assert(!storage_set_rollback(storage, 1));
-    memset(block, 'B', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    // Failed continuation publication must leave the original rollback point usable.
-    fail_rename=1;
-    storage=NULL;
-    assert(storage_open(&storage, path, 0, 0, 0, 1)==-EIO && !storage);
-    fail_rename=0;
-    storage=open_store(path);
-    memset(expected, 'A', sizeof(block));
-    check_bytes(storage, expected);
-    assert(!storage_get_rollback(storage) && !storage_set_rollback(storage, 1));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 1));
-    assert(storage_get_rollback(storage));
-    memcpy(expected, block, sizeof(block));
-    check_bytes(storage, expected);
-    memset(block, 'C', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 6*MIB)==sizeof(block));
-    memcpy(expected, block, sizeof(block));
-    memcpy(expected+6*MIB, block, sizeof(block));
-    assert(!storage_set_rollback(storage, 0) && !storage_set_rollback(storage, 1));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 1));
-    check_bytes(storage, expected);
-    memset(block, 'D', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_sync(storage));
-    memcpy(expected, block, sizeof(block));
-    memset(block, 'E', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 1));
-    assert(storage_get_rollback(storage));
-    check_bytes(storage, expected);
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    storage=open_store(path);
-    memset(expected, 0, IMAGE_SIZE);
-    memset(expected, 'A', sizeof(block));
-    check_bytes(storage, expected);
-    assert(!storage_get_rollback(storage) && !storage_finish(storage));
-    storage_close(storage);
-    for (int crash=0; crash < 2; crash++)
-    {
-        storage=open_store(path);
-        assert(!storage_set_rollback(storage, 1));
-        memset(block, 'B', sizeof(block));
-        assert(storage_write(storage, block, sizeof(block), 4096)==sizeof(block));
-        memcpy(expected+4096, block, sizeof(block));
-        assert(!storage_finish(storage));
-        storage_close(storage);
-        assert(!storage_open(&storage, path, 0, 0, 0, 1));
-        assert(storage_get_rollback(storage) && !storage_set_rollback(storage, 0));
-        if (crash)
-        {
-            memset(block, 'C', sizeof(block));
-            assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-            assert(!storage_sync(storage));
-            memcpy(expected, block, sizeof(block));
-            memset(block, 'D', sizeof(block));
-            assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-        }
-        else assert(!storage_finish(storage));
-        storage_close(storage);
-        storage=open_store(path);
-        check_bytes(storage, expected);
-        assert(!storage_get_rollback(storage) && !storage_finish(storage));
-        storage_close(storage);
-        check_clean_files(path);
-    }
-    free(expected);
-    puts("PASS: continued rollback preserves baseline through clean writes, crashes, cancellation and publication failure");
-}
-
-// Commit cleanup fails at close; deferred rollback cleanup can fail only at the next open.
-static void check_cleanup(const char *path, int mode)
-{
-    unsigned char *expected=calloc(1, IMAGE_SIZE), block[4096];
-    char marker[PATH_MAX], lock[PATH_MAX], log[PATH_MAX];
-    assert(expected && snprintf(marker, sizeof(marker), "%s.rollback", path) < (int)sizeof(marker));
-    assert(snprintf(lock, sizeof(lock), "%s.lock", path) < (int)sizeof(lock));
-    assert(snprintf(log, sizeof(log), "%s.log", path) < (int)sizeof(log));
-    struct storage *storage=open_store(path);
-    memset(block, 'A', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    check_clean_files(path);
-    storage=open_store(path);
-    memset(block, 'B', sizeof(block));
-    assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
-    assert(!storage_sync(storage));
-    if (mode < 2)
-    {
-        fail_directory_sync=1;
-        assert(storage_finish(storage)==-EIO);
-        fail_directory_sync=0;
-        assert(!access(log, F_OK));
-        if (mode) assert(!storage_finish(storage));
-        storage_close(storage);
-        if (mode) check_clean_files(path);
-        else assert(!access(lock, F_OK));
-    }
-    else
-    {
-        assert(!storage_set_rollback(storage, 1));
-        assert(!storage_finish(storage));
-        storage_close(storage);
-        assert(!access(marker, F_OK) && !access(log, F_OK));
-        assert(access(lock, F_OK) && errno==ENOENT);
-        if (mode==3) fail_after_marker=marker;
-        else fail_directory_sync=1;
-        storage=NULL;
-        assert(storage_open(&storage, path, 0, 0, 0, 0)==-EIO && !storage);
-        fail_directory_sync=0; fail_after_marker=NULL;
-        assert(!access(lock, F_OK));
-        if (mode==2) assert(!access(marker, F_OK));
-        else
-        {
-            assert(access(marker, F_OK) && errno==ENOENT);
-            assert(access(log, F_OK) && errno==ENOENT);
-        }
-    }
-    storage=open_store(path);
-    memset(expected, mode >= 2 ? 'A' : 'B', sizeof(block));
-    check_bytes(storage, expected);
-    assert(!storage_finish(storage));
-    storage_close(storage);
-    check_clean_files(path);
-    free(expected);
 }
 
 // The most recent complete fsync survives close while following unsynchronized writes do not.
@@ -598,7 +332,7 @@ static void check_journal_tail(const char *path, int mode)
     storage=NULL;
     if (mode==2)
     {
-        assert(storage_open(&storage, path, 0, 0, 0, 0)==-EIO && !storage);
+        assert(storage_open(&storage, path, 0, 0, 0, NULL)==-EIO && !storage);
         assert(log_size(log)==8192);
     }
     else
@@ -764,7 +498,7 @@ static void check_io(const char *path)
     char part[PATH_MAX];
     assert(snprintf(part, sizeof(part), "%s.0", path) < (int)sizeof(part));
     struct storage *other=NULL;
-    assert(storage_open(&other, path, IMAGE_SIZE, 0, MIB, 0)==-EWOULDBLOCK && !other);
+    assert(storage_open(&other, path, IMAGE_SIZE, 0, MIB, NULL)==-EWOULDBLOCK && !other);
     assert(access(part, F_OK) && errno==ENOENT);
     assert(storage_write(storage, zero, sizeof(zero), 7*MIB)==sizeof(zero));
     assert(!storage_sync(storage) && access(part, F_OK) && errno==ENOENT);
@@ -776,7 +510,7 @@ static void check_io(const char *path)
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
     int fd;
     off_t offset;
-    assert(!storage_read_extent(storage, 0, sizeof(input), &fd, &offset));
+    assert(storage_read_extent(storage, 0, sizeof(input), &fd, &offset)==1);
     assert(!storage_read_extent(storage, 2*MIB-512, 4096, &fd, &offset));
     assert(!storage_read_extent(storage, IMAGE_SIZE, 4096, &fd, &offset));
     assert(storage_read_extent(storage, -1, 4096, &fd, &offset)==-EINVAL);
@@ -790,14 +524,14 @@ static void check_io(const char *path)
     assert(!memcmp(input, output, sizeof(input)));
     unsigned char changed[sizeof(input)];
     memset(changed, 0x63, sizeof(changed));
-    // A returned baseline extent remains valid while later checkpoints recycle other slots.
+    // A returned descriptor extent remains valid while later checkpoints recycle other slots.
     for (int checkpoint=0; checkpoint < 3; checkpoint++)
     {
         assert(storage_write(storage, changed, sizeof(changed), 0)==sizeof(changed));
         assert(!storage_sync(storage));
         int current_fd;
         off_t current_offset;
-        assert(!storage_read_extent(storage, 0, sizeof(changed), &current_fd, &current_offset));
+        assert(storage_read_extent(storage, 0, sizeof(changed), &current_fd, &current_offset)==1);
         assert(pread(fd, output, sizeof(output), offset)==sizeof(output));
         assert(!memcmp(input, output, sizeof(input)));
     }
@@ -813,13 +547,13 @@ static void check_large_part(const char *path)
     uint64_t limit=UINT64_C(16)*1024*1024*1024*1024;
     unsigned char input[4096], output[4096];
     memset(input, 0x9a, sizeof(input));
-    assert(!storage_open(&storage, path, MIB, 0, limit, 0));
+    assert(!storage_open(&storage, path, MIB, 0, limit, NULL));
     alarm(10);
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
     alarm(0);
     assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL));
     assert(storage_size(storage)==MIB);
     assert(storage_read(storage, output, sizeof(output), 0)==sizeof(output));
     assert(!memcmp(input, output, sizeof(input)));
@@ -847,14 +581,14 @@ static void check_metadata(const char *path)
     damaged[4096]^=1;
     assert(pwrite(fd, damaged, length, 0)==(ssize_t)length);
     storage=NULL;
-    assert(storage_open(&storage, path, 0, 0, 0, 0)==-EIO && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL)==-EIO && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     assert(!ftruncate(fd, (off_t)length-1));
-    assert(storage_open(&storage, path, 0, 0, 0, 0)==-EIO && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL)==-EIO && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     uint64_t geometry[]={htole64(4096), htole64((uint64_t)DYN_MAX_PARTS+1)};
     assert(pwrite(fd, geometry, sizeof(geometry), 24)==sizeof(geometry));
-    assert(storage_open(&storage, path, 0, 0, 0, 0)==-EINVAL && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL)==-EINVAL && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     close(fd);
     free(original); free(damaged);
@@ -889,7 +623,7 @@ static void check_short_leaf(const char *path)
     puts("PASS: truncated lazy index page reports read failure");
 }
 
-// Large writes must find a free extent beyond many isolated holes and survive rollback.
+// Large writes must find a free extent beyond many isolated holes and preserve saved data.
 static void check_fragmented_runs(const char *path)
 {
     uint64_t root[2]={1, 0}, bits[16]={0}, entries[512]={0};
@@ -900,16 +634,17 @@ static void check_fragmented_runs(const char *path)
     }
     bits[15]=UINT64_C(1)<<63;
     entries[127]=htole64(1024);
-    struct snapshot snapshot={4*MIB, 4*MIB, 1024, 2, root, bits, 0};
+    struct snapshot snapshot={.size=4*MIB, .part_size=4*MIB, .slots=1024, .root_count=2, .root=root, .bits=bits};
     int fd=open_suffix(path, ".0", O_RDWR|O_CREAT|O_EXCL);
     assert(fd >= 0 && !ftruncate(fd, 4*MIB));
     assert(!write_at(fd, entries, sizeof(entries), 0) && !fsync(fd));
     close(fd);
     assert(!snapshot_publish(path, &snapshot));
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, 0, 0, 0, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL));
     unsigned char *input=malloc(MIB), *output=malloc(MIB);
     assert(input && output);
+    assert(!storage_snapshot_create(storage, "original"));
     memset(input, 'R', MIB);
     measured_writes=0; measure_writes=1;
     assert(storage_write(storage, input, MIB, 2*MIB)==MIB);
@@ -917,20 +652,20 @@ static void check_fragmented_runs(const char *path)
     assert(measured_writes==1);
     assert(!storage_sync(storage));
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
-    assert(!storage_set_rollback(storage, 1) && !storage_finish(storage));
+    assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 1));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL));
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
     assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, "original"));
     memset(input, 0, MIB);
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
     assert(storage_read(storage, output, MIB, 0)==MIB && !memcmp(input, output, MIB));
     assert(!storage_finish(storage));
     storage_close(storage);
     free(input); free(output);
-    puts("PASS: fragmented recycling keeps a 1 MiB write contiguous and preserves rollback");
+    puts("PASS: fragmented recycling keeps a 1 MiB write contiguous and preserves saved data");
 }
 
 // Keep every test image in a uniquely owned directory supplied by the test runner.
@@ -952,15 +687,6 @@ int main(int argc, char **argv)
     }
     puts("PASS: journal truncated/corrupt suffix recovery and middle-corruption rejection");
     assert(snprintf(path, sizeof(path), "%s/journal-limit", directory) < (int)sizeof(path)); check_journal_limit(path);
-    assert(snprintf(path, sizeof(path), "%s/rollback", directory) < (int)sizeof(path)); check_rollback(path);
-    assert(snprintf(path, sizeof(path), "%s/cancel", directory) < (int)sizeof(path)); check_rollback_cancel(path);
-    assert(snprintf(path, sizeof(path), "%s/continue", directory) < (int)sizeof(path)); check_norollback(path);
-    for (int mode=0; mode < 4; mode++)
-    {
-        assert(snprintf(path, sizeof(path), "%s/cleanup-%d", directory, mode) < (int)sizeof(path));
-        check_cleanup(path, mode);
-    }
-    puts("PASS: normal shutdown cleanup and failed deferred-rollback recovery remain retryable");
     assert(snprintf(path, sizeof(path), "%s/concurrent", directory) < (int)sizeof(path)); check_concurrency(path);
     assert(snprintf(path, sizeof(path), "%s/large", directory) < (int)sizeof(path)); check_large_part(path);
     assert(snprintf(path, sizeof(path), "%s/metadata", directory) < (int)sizeof(path)); check_metadata(path);

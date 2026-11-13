@@ -10,6 +10,8 @@ struct snapshot
     size_t root_count;
     uint64_t *root, *bits;
     uint64_t sequence;
+    uint64_t id, parent, created;
+    char name[DYN_NAME_MAX+1];
 };
 
 int read_at(int fd, void *buffer, size_t size, off_t offset);

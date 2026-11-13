@@ -1,0 +1,257 @@
+{
+  "environment": "Debian 13 x86-64 VM; packed static i686 binaries; disposable tmpfs backing files",
+  "index_cache_pages": 4096,
+  "index_cache_payload_MiB": 16,
+  "limitations": [
+    "RSS and high-water RSS come from /proc for the FUSE daemon and exclude the kernel backing-file cache.",
+    "One 4 KiB write touches each 2 MiB logical region. A single explicit fsync follows all writes; all regions and following zero blocks are verified after remount.",
+    "Old implementation is limited to 128 GiB virtual size to bound its memory use. The new implementation is also tested across the full 1 TiB.",
+    "Total process memory includes root tables, allocation maps, cache bookkeeping and temporary checkpoint serialization in addition to cached index pages."
+  ],
+  "runs": [
+    {
+      "label": "before-128GiB",
+      "binary_sha256": "aa1f10e7c59d2cd1bd8c7d45e639dbc64302e97fcf9b5ba27f87284972b0f0e5",
+      "virtual_size_GiB": 128,
+      "regions": 65536,
+      "region_bytes": 2097152,
+      "write_bytes_per_region": 4096,
+      "backing": "tmpfs",
+      "rss_units": "KiB",
+      "samples": [
+        {
+          "written_regions": 1024,
+          "elapsed_seconds": 0.046,
+          "VmHWM": 5860,
+          "VmRSS": 5860
+        },
+        {
+          "written_regions": 4096,
+          "elapsed_seconds": 0.179,
+          "VmHWM": 19956,
+          "VmRSS": 19956
+        },
+        {
+          "written_regions": 8192,
+          "elapsed_seconds": 0.352,
+          "VmHWM": 38736,
+          "VmRSS": 38736
+        },
+        {
+          "written_regions": 16384,
+          "elapsed_seconds": 0.687,
+          "VmHWM": 76300,
+          "VmRSS": 76300
+        },
+        {
+          "written_regions": 32768,
+          "elapsed_seconds": 1.351,
+          "VmHWM": 151432,
+          "VmRSS": 151432
+        },
+        {
+          "written_regions": 65536,
+          "elapsed_seconds": 2.724,
+          "VmHWM": 301716,
+          "VmRSS": 301716
+        }
+      ],
+      "notes": [
+        "Actual packed static i686 FUSE daemon. Writes use O_DIRECT and one explicit fsync after all regions.",
+        "Every written region is verified after clean unmount/remount, including the zero-filled 4 KiB immediately after its payload."
+      ],
+      "initial": {
+        "VmHWM": 1128,
+        "VmRSS": 1128
+      },
+      "write_seconds": 2.724105,
+      "fsync_seconds": 0.168841,
+      "after_fsync": {
+        "VmHWM": 302396,
+        "VmRSS": 301724
+      },
+      "physical_part_count": 1,
+      "physical_part_bytes": 536870912,
+      "metadata_bytes": 544768,
+      "verify_seconds": 3.195159,
+      "after_verify": {
+        "VmHWM": 301436,
+        "VmRSS": 301436
+      },
+      "peak_RSS_MiB": 295.309
+    },
+    {
+      "label": "after-128GiB",
+      "binary_sha256": "8cacb347c40a0bdc242373a9655990c15e54c0050e4c6fb930bd60333658a8bf",
+      "virtual_size_GiB": 128,
+      "regions": 65536,
+      "region_bytes": 2097152,
+      "write_bytes_per_region": 4096,
+      "backing": "tmpfs",
+      "rss_units": "KiB",
+      "samples": [
+        {
+          "written_regions": 1024,
+          "elapsed_seconds": 0.041,
+          "VmHWM": 5868,
+          "VmRSS": 5868
+        },
+        {
+          "written_regions": 4096,
+          "elapsed_seconds": 0.166,
+          "VmHWM": 19960,
+          "VmRSS": 19960
+        },
+        {
+          "written_regions": 8192,
+          "elapsed_seconds": 0.337,
+          "VmHWM": 20024,
+          "VmRSS": 20024
+        },
+        {
+          "written_regions": 16384,
+          "elapsed_seconds": 0.672,
+          "VmHWM": 20132,
+          "VmRSS": 20132
+        },
+        {
+          "written_regions": 32768,
+          "elapsed_seconds": 1.336,
+          "VmHWM": 20368,
+          "VmRSS": 20368
+        },
+        {
+          "written_regions": 65536,
+          "elapsed_seconds": 2.684,
+          "VmHWM": 20816,
+          "VmRSS": 20816
+        }
+      ],
+      "notes": [
+        "Actual packed static i686 FUSE daemon. Writes use O_DIRECT and one explicit fsync after all regions.",
+        "Every written region is verified after clean unmount/remount, including the zero-filled 4 KiB immediately after its payload."
+      ],
+      "initial": {
+        "VmHWM": 1132,
+        "VmRSS": 1132
+      },
+      "write_seconds": 2.68442,
+      "fsync_seconds": 0.013847,
+      "after_fsync": {
+        "VmHWM": 21564,
+        "VmRSS": 20824
+      },
+      "physical_part_count": 1,
+      "physical_part_bytes": 536870912,
+      "metadata_bytes": 544768,
+      "verify_seconds": 3.217359,
+      "after_verify": {
+        "VmHWM": 20532,
+        "VmRSS": 20532
+      },
+      "peak_RSS_MiB": 21.059
+    },
+    {
+      "label": "after-1TiB",
+      "binary_sha256": "8cacb347c40a0bdc242373a9655990c15e54c0050e4c6fb930bd60333658a8bf",
+      "virtual_size_GiB": 1024,
+      "regions": 524288,
+      "region_bytes": 2097152,
+      "write_bytes_per_region": 4096,
+      "backing": "tmpfs",
+      "rss_units": "KiB",
+      "samples": [
+        {
+          "written_regions": 1024,
+          "elapsed_seconds": 0.043,
+          "VmHWM": 9452,
+          "VmRSS": 9452
+        },
+        {
+          "written_regions": 4096,
+          "elapsed_seconds": 0.172,
+          "VmHWM": 23544,
+          "VmRSS": 23544
+        },
+        {
+          "written_regions": 8192,
+          "elapsed_seconds": 0.339,
+          "VmHWM": 23608,
+          "VmRSS": 23608
+        },
+        {
+          "written_regions": 16384,
+          "elapsed_seconds": 0.686,
+          "VmHWM": 23716,
+          "VmRSS": 23716
+        },
+        {
+          "written_regions": 32768,
+          "elapsed_seconds": 1.359,
+          "VmHWM": 23952,
+          "VmRSS": 23952
+        },
+        {
+          "written_regions": 65536,
+          "elapsed_seconds": 2.703,
+          "VmHWM": 24408,
+          "VmRSS": 24408
+        },
+        {
+          "written_regions": 131072,
+          "elapsed_seconds": 5.347,
+          "VmHWM": 25220,
+          "VmRSS": 25220
+        },
+        {
+          "written_regions": 262144,
+          "elapsed_seconds": 10.826,
+          "VmHWM": 27016,
+          "VmRSS": 27016
+        },
+        {
+          "written_regions": 524288,
+          "elapsed_seconds": 21.783,
+          "VmHWM": 31748,
+          "VmRSS": 31300
+        }
+      ],
+      "notes": [
+        "Actual packed static i686 FUSE daemon. Writes use O_DIRECT and one explicit fsync after all regions.",
+        "Every written region is verified after clean unmount/remount, including the zero-filled 4 KiB immediately after its payload."
+      ],
+      "initial": {
+        "VmHWM": 4716,
+        "VmRSS": 4716
+      },
+      "write_seconds": 21.783577,
+      "fsync_seconds": 0.048846,
+      "after_fsync": {
+        "VmHWM": 39624,
+        "VmRSS": 31316
+      },
+      "physical_part_count": 2,
+      "physical_part_bytes": 4294967296,
+      "metadata_bytes": 4329472,
+      "verify_seconds": 28.744745,
+      "after_verify": {
+        "VmHWM": 28164,
+        "VmRSS": 28164
+      },
+      "peak_RSS_MiB": 38.695
+    }
+  ],
+  "fat32_flush_smoke": {
+    "notes": "Single short regression smoke: 64 measured 4 KiB write+fsync operations, four warmups, O_DIRECT, 64 GiB virtual disk, FAT32 flush loop image on tmpfs.",
+    "variants": {
+      "before": {
+        "binary_sha256": "aa1f10e7c59d2cd1bd8c7d45e639dbc64302e97fcf9b5ba27f87284972b0f0e5",
+        "median_write_fsync_ms": 0.397375
+      },
+      "after": {
+        "binary_sha256": "8cacb347c40a0bdc242373a9655990c15e54c0050e4c6fb930bd60333658a8bf",
+        "median_write_fsync_ms": 0.279669
+      }
+    }
+  }
+}

@@ -18,6 +18,9 @@ test_dir=$(mktemp -d)
 cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c \
   -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=rename -o "$test_dir/io"
 "$test_dir/io" "$test_dir"
+cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c journal.c bitmap.c migration.c \
+  -pthread -Wl,--wrap=pread,--wrap=pread64,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/cache"
+"$test_dir/cache" "$test_dir"
 cc -DTEST_ALLOC_FAILURE tests/bitmap.c bitmap.c \
   -Wl,--wrap=malloc,--wrap=calloc -o "$test_dir/bitmap"
 "$test_dir/bitmap"
@@ -34,11 +37,45 @@ Add `--lock-test /path/to/compiled/lock` to run lock handoff tests on the FAT32 
 Format 600 retains a mount-start rollback point and a latest-`fsync` crash checkpoint.
 The first overwrite after a checkpoint uses COW again. A changed `fsync` appends
 changed root entries and bitmap words in 4 KiB-aligned records to a bounded 32 MiB
-log, while bitmap comparison and allocator preparation remain linear in bitmap size.
+log. The log stays open between checkpoints; bitmap comparison, checkpoint updates
+and free-run maintenance visit only touched words. Allocation groups free bitmap words
+by their longest run and joins neighboring runs for larger writes. Finding the live
+end can still scan unused trailing words; startup and full snapshots remain linear.
+The added RAM indexes cost 10 bytes per bitmap word in the i686 build (about 2.5 MiB
+per 64 GiB of physical slot range, before capacity rounding), with no format change.
+Index pages now use a lazy 32 MiB cache split across mixed-hash I/O lock buckets.
+Dirty eviction writes only private working pages without fsync; roots remain queued
+until the usual data/index-before-log checkpoint. Bitmap arrays start at their exact
+required capacity and grow with at most 12.5% reserve above 4096 words. A filled
+1 TiB image therefore needs about 227–250 MiB of steady internal allocations in the
+i686 build, plus allocator/FUSE overhead; bitmap growth and full snapshots add
+temporary buffers. This is a cache bound, not a hard process-RAM limit.
+With the earlier 16 MiB cache, peak daemon RSS in the strided-write test fell
+from 295.3 MiB to 21.1 MiB for 128 GiB of virtual space.
+Touching every 2 MiB region of a 1 TiB virtual disk
+peaked at 38.7 MiB, with 4 GiB of physical parts; every region passed remount
+verification. These are sparse workloads, not fully populated disks, and exclude
+the kernel backing-file cache. [Memory measurements](cache-memory.json) include
+the binary hashes, workload and RSS samples.
 Log compaction and clean unmount write a complete root/bitmap snapshot; no-change
 calls skip backing synchronization. The microbenchmark below measures I/O within one mount and
 includes end-of-pass checkpoints. Compare in-place writes between checkpoints, first
 COW writes, checkpoint costs and final unmount separately against format 500.
+
+Compared with `49e5546`, three alternating pairs on a tmpfs-backed FAT32 loop image
+gave these medians for the packed static i686 binaries:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| 4 KiB write + fsync, default FAT32 | 0.312 ms | 0.301 ms |
+| 4 KiB write + fsync, FAT32 `flush` | 112.35 ms | 0.296 ms |
+| 24 MiB fragmented writes + fsync, FAT32 `flush` | 142.8 MiB/s | 436.6 MiB/s |
+
+The main `flush` improvement removes repeated log-close delays: 128 checkpoints now
+open the log once instead of 128 times. These VM results measure filesystem overhead,
+not physical USB performance. [Full measurements](fat32-optimizations.json) include
+all trials, hashes, isolated bitmap timings and limitations. Native sanitizer tests,
+static32 tests, FAT32 checks and old/new format-600 interoperability passed.
 
 The benchmark creates disposable 512 MiB storage with a 32 MiB physical part limit.
 It measures initial allocation, 128 KiB and 1 MiB sequential reads and overwrites, eight-worker

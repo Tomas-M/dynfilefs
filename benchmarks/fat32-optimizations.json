@@ -1,0 +1,230 @@
+{
+  "before_commit": "49e5546",
+  "binary_sha256": {
+    "before": "24727c2f12432e2bff319778711f67b7386ad7e3d65cfec48347eb35a16f6e16",
+    "after": "aa1f10e7c59d2cd1bd8c7d45e639dbc64302e97fcf9b5ba27f87284972b0f0e5"
+  },
+  "environment": {
+    "os": "Debian 13 x86-64 VM",
+    "kernel": "6.12.115+deb13.1-amd64",
+    "target": "packed static i686, musl 1.2.6, libfuse 3.18.3",
+    "backing": "256 MiB FAT32 loop image on tmpfs"
+  },
+  "workload": {
+    "trials": 3,
+    "order": [
+      [
+        "before",
+        "after"
+      ],
+      [
+        "after",
+        "before"
+      ],
+      [
+        "before",
+        "after"
+      ]
+    ],
+    "virtual_size_GiB": 64,
+    "split_MiB": 4088,
+    "sync_block_bytes": 4096,
+    "sync_iterations": 128,
+    "sync_warmup_iterations": 4,
+    "fragmented_write_MiB": 24,
+    "fragmented_request_MiB": 1
+  },
+  "limitations": [
+    "Warm caches, foreground FUSE and O_DIRECT. This measures VM filesystem overhead, not physical USB or power-loss durability.",
+    "Fragmentation fixture commits 32 MiB, then replaces the first 16 MiB in a second mount before the timed 24 MiB overwrite.",
+    "Latency values are medians of each trial; summary values are medians of three trials. Clean unmount is outside the timed regions.",
+    "Bitmap timings isolate allocator maintenance, with three runs per variant. The old checkpoint includes its required full free-index rebuild.",
+    "Syscall counts include the complete mount/checkpoint/unmount fixture. Journal write opens are counted separately; close_calls includes all descriptors."
+  ],
+  "modes": {
+    "normal": {
+      "before": {
+        "trials": [
+          {
+            "fsync_ms": 0.26984,
+            "write_fsync_ms": 0.311954,
+            "p95_write_fsync_ms": 0.383825,
+            "fragmented_write_MiB_s": 587.241403,
+            "fragmented_write_and_fsync_MiB_s": 453.054596,
+            "fragmented_fsync_ms": 12.104695
+          },
+          {
+            "fsync_ms": 0.271454,
+            "write_fsync_ms": 0.312186,
+            "p95_write_fsync_ms": 0.362524,
+            "fragmented_write_MiB_s": 582.174797,
+            "fragmented_write_and_fsync_MiB_s": 423.773308,
+            "fragmented_fsync_ms": 15.409321
+          },
+          {
+            "fsync_ms": 0.266031,
+            "write_fsync_ms": 0.304123,
+            "p95_write_fsync_ms": 0.344241,
+            "fragmented_write_MiB_s": 672.312184,
+            "fragmented_write_and_fsync_MiB_s": 485.499888,
+            "fragmented_fsync_ms": 13.735883
+          }
+        ],
+        "median": {
+          "fsync_ms": 0.26984,
+          "write_fsync_ms": 0.311954,
+          "p95_write_fsync_ms": 0.362524,
+          "fragmented_write_MiB_s": 587.241403,
+          "fragmented_write_and_fsync_MiB_s": 453.054596,
+          "fragmented_fsync_ms": 13.735883
+        }
+      },
+      "after": {
+        "trials": [
+          {
+            "fsync_ms": 0.26636,
+            "write_fsync_ms": 0.308935,
+            "p95_write_fsync_ms": 0.370396,
+            "fragmented_write_MiB_s": 582.845049,
+            "fragmented_write_and_fsync_MiB_s": 453.750472,
+            "fragmented_fsync_ms": 11.715182
+          },
+          {
+            "fsync_ms": 0.256761,
+            "write_fsync_ms": 0.301145,
+            "p95_write_fsync_ms": 0.370394,
+            "fragmented_write_MiB_s": 606.005316,
+            "fragmented_write_and_fsync_MiB_s": 466.781649,
+            "fragmented_fsync_ms": 11.81229
+          },
+          {
+            "fsync_ms": 0.251031,
+            "write_fsync_ms": 0.289287,
+            "p95_write_fsync_ms": 0.350417,
+            "fragmented_write_MiB_s": 644.592282,
+            "fragmented_write_and_fsync_MiB_s": 492.592658,
+            "fragmented_fsync_ms": 11.48896
+          }
+        ],
+        "median": {
+          "fsync_ms": 0.256761,
+          "write_fsync_ms": 0.301145,
+          "p95_write_fsync_ms": 0.370394,
+          "fragmented_write_MiB_s": 606.005316,
+          "fragmented_write_and_fsync_MiB_s": 466.781649,
+          "fragmented_fsync_ms": 11.715182
+        }
+      }
+    },
+    "flush": {
+      "before": {
+        "trials": [
+          {
+            "fsync_ms": 112.220443,
+            "write_fsync_ms": 112.321152,
+            "p95_write_fsync_ms": 162.195127,
+            "fragmented_write_MiB_s": 535.690407,
+            "fragmented_write_and_fsync_MiB_s": 126.673978,
+            "fragmented_fsync_ms": 144.660751
+          },
+          {
+            "fsync_ms": 120.040587,
+            "write_fsync_ms": 120.159155,
+            "p95_write_fsync_ms": 159.295707,
+            "fragmented_write_MiB_s": 591.77975,
+            "fragmented_write_and_fsync_MiB_s": 142.784776,
+            "fragmented_fsync_ms": 127.529517
+          },
+          {
+            "fsync_ms": 112.268538,
+            "write_fsync_ms": 112.351826,
+            "p95_write_fsync_ms": 152.3838,
+            "fragmented_write_MiB_s": 652.351608,
+            "fragmented_write_and_fsync_MiB_s": 159.603328,
+            "fragmented_fsync_ms": 113.582828
+          }
+        ],
+        "median": {
+          "fsync_ms": 112.268538,
+          "write_fsync_ms": 112.351826,
+          "p95_write_fsync_ms": 159.295707,
+          "fragmented_write_MiB_s": 591.77975,
+          "fragmented_write_and_fsync_MiB_s": 142.784776,
+          "fragmented_fsync_ms": 127.529517
+        }
+      },
+      "after": {
+        "trials": [
+          {
+            "fsync_ms": 0.255489,
+            "write_fsync_ms": 0.302808,
+            "p95_write_fsync_ms": 0.370595,
+            "fragmented_write_MiB_s": 572.07413,
+            "fragmented_write_and_fsync_MiB_s": 427.699029,
+            "fragmented_fsync_ms": 14.161621
+          },
+          {
+            "fsync_ms": 0.250916,
+            "write_fsync_ms": 0.296362,
+            "p95_write_fsync_ms": 0.364826,
+            "fragmented_write_MiB_s": 559.31386,
+            "fragmented_write_and_fsync_MiB_s": 436.565822,
+            "fragmented_fsync_ms": 12.06481
+          },
+          {
+            "fsync_ms": 0.226031,
+            "write_fsync_ms": 0.26628,
+            "p95_write_fsync_ms": 0.378199,
+            "fragmented_write_MiB_s": 661.7545,
+            "fragmented_write_and_fsync_MiB_s": 505.349216,
+            "fragmented_fsync_ms": 11.224685
+          }
+        ],
+        "median": {
+          "fsync_ms": 0.250916,
+          "write_fsync_ms": 0.296362,
+          "p95_write_fsync_ms": 0.370595,
+          "fragmented_write_MiB_s": 572.07413,
+          "fragmented_write_and_fsync_MiB_s": 436.565822,
+          "fragmented_fsync_ms": 12.06481
+        }
+      }
+    }
+  },
+  "bitmap_sparse_checkpoints": {
+    "physical_size_GiB": 64,
+    "checkpoints": 1000,
+    "compiler": "native GCC -O2",
+    "seconds": {
+      "before": {
+        "runs": [
+          0.659333,
+          0.659852,
+          0.660812
+        ],
+        "median": 0.659852
+      },
+      "after": {
+        "runs": [
+          0.000106,
+          0.000114,
+          0.000112
+        ],
+        "median": 0.000112
+      }
+    }
+  },
+  "journal_syscalls": {
+    "checkpoints": 128,
+    "counts": {
+      "before": {
+        "journal_write_opens": 128,
+        "close_calls": 146
+      },
+      "after": {
+        "journal_write_opens": 1,
+        "close_calls": 19
+      }
+    }
+  }
+}

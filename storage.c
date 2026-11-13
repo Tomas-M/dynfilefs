@@ -16,19 +16,31 @@
 
 #define MAX_PARTS DYN_MAX_PARTS
 #define LOCK_COUNT 256
+#if DYN_CACHE_PAGES < LOCK_COUNT || DYN_CACHE_PAGES%LOCK_COUNT
+#error DYN_CACHE_PAGES must be a positive multiple of LOCK_COUNT
+#endif
 
 struct part { int fd, dirty; uint64_t blocks; };
-struct leaf { uint64_t *entries; int dirty; };
+struct leaf_page
+{
+    uint64_t entries[512];
+    size_t index;
+    struct leaf_page *prev, *next;
+    int dirty;
+};
+struct leaf { struct leaf_page *page; int dirty; };
+struct leaf_cache { struct leaf_page *first, *last; size_t count; };
 struct storage
 {
     char *path;
-    int lock_fd, rollback, changed, finished, directory_dirty, force_snapshot;
+    int lock_fd, journal_fd, rollback, changed, finished, directory_dirty, force_snapshot;
     uint64_t size, part_size, capacity, sequence, base_sequence, log_length, checkpoint_slots;
     size_t root_count, part_count, dirty_count, tail_count, checkpoint_roots;
     size_t tails[MAX_PARTS];
     uint64_t *root;
     size_t *dirty_leaves;
     struct leaf *leaves;
+    struct leaf_cache cache[LOCK_COUNT];
     struct part parts[MAX_PARTS];
     struct block_map map;
     pthread_mutex_t allocation, stripes[LOCK_COUNT], gate;
@@ -236,17 +248,6 @@ static int allocate_blocks(struct storage *storage, size_t maximum, uint64_t *re
         uint64_t remaining=storage->capacity-first%storage->capacity;
         if (length > remaining)
         { map_release(&storage->map, first+remaining, length-remaining); length=remaining; }
-        // Join adjacent free words into one large backing-file write.
-        while (length < maximum && length < remaining)
-        {
-            uint64_t next;
-            size_t wanted=maximum-length;
-            if (wanted > remaining-length) wanted=remaining-length;
-            size_t extra=map_take(&storage->map, wanted, &next);
-            if (!extra) break;
-            if (next!=first+length) { map_release(&storage->map, next, extra); break; }
-            length+=extra;
-        }
     }
     else
     {
@@ -301,43 +302,93 @@ static int protected_block(struct storage *storage, uint64_t ref)
     return protected;
 }
 
-// Load only the requested leaf; absent roots represent whole zero-filled regions.
-static int load_leaf(struct storage *storage, size_t index)
+// Mix nearby and regularly spaced regions across both locks and cache buckets.
+static size_t leaf_stripe(size_t index)
+{
+    return (index^(index>>8)^(index>>16))%LOCK_COUNT;
+}
+
+// Move a cached page to the front while its stripe lock excludes other users.
+static void touch_leaf(struct leaf_cache *cache, struct leaf_page *page)
+{
+    if (cache->first==page) return;
+    if (page->prev) page->prev->next=page->next;
+    if (page->next) page->next->prev=page->prev;
+    if (cache->last==page) cache->last=page->prev;
+    page->prev=NULL; page->next=cache->first;
+    if (cache->first) cache->first->prev=page;
+    else cache->last=page;
+    cache->first=page;
+}
+
+// Spill only the private working leaf; publication still waits for storage_sync().
+static int spill_leaf(struct storage *storage, struct leaf_page *page)
+{
+    if (!page->dirty) return 0;
+    uint64_t entries[512];
+    for (size_t i=0; i < 512; i++) entries[i]=htole64(page->entries[i]);
+    int result=write_physical(storage, storage->root[page->index], entries, sizeof(entries), 0);
+    if (!result) page->dirty=0;
+    return result;
+}
+
+// Bound clean and dirty pages alike, preserving the old cache entry on any I/O failure.
+static int load_leaf(struct storage *storage, size_t index, int create)
 {
     struct leaf *leaf=&storage->leaves[index];
-    if (leaf->entries || !storage->root[index]) return 0;
-    uint64_t *entries=malloc(4096);
-    if (!entries) return -ENOMEM;
+    struct leaf_cache *cache=&storage->cache[leaf_stripe(index)];
+    if (leaf->page) { touch_leaf(cache, leaf->page); return 0; }
     uint64_t ref=storage->root[index];
-    int result=read_at(storage->parts[(ref-1)/storage->capacity].fd, entries, 4096, physical_offset(storage, ref));
-    pthread_mutex_lock(&storage->allocation);
-    for (size_t i=0; !result && i < 512; i++)
+    if (!ref && !create) return 0;
+    uint64_t entries[512]={0};
+    int result=0;
+    if (ref)
     {
-        entries[i]=le64toh(entries[i]);
-        ref=entries[i];
-        if (ref && (ref > storage->map.slots || !map_test(storage->map.used, ref-1))) result=-EIO;
+        result=read_at(storage->parts[(ref-1)/storage->capacity].fd, entries, sizeof(entries), physical_offset(storage, ref));
+        pthread_mutex_lock(&storage->allocation);
+        for (size_t i=0; !result && i < 512; i++)
+        {
+            entries[i]=le64toh(entries[i]);
+            ref=entries[i];
+            if (ref && (ref > storage->map.slots || !map_test(storage->map.used, ref-1))) result=-EIO;
+        }
+        pthread_mutex_unlock(&storage->allocation);
     }
-    pthread_mutex_unlock(&storage->allocation);
-    if (result) free(entries);
-    else leaf->entries=entries;
-    return result;
+    if (result) return result;
+    struct leaf_page *page;
+    if (cache->count < DYN_CACHE_PAGES/LOCK_COUNT)
+    {
+        page=malloc(sizeof(*page));
+        if (!page) return -ENOMEM;
+        page->prev=NULL; page->next=NULL;
+        cache->count++;
+    }
+    else
+    {
+        page=cache->last;
+        result=spill_leaf(storage, page);
+        if (result) return result;
+        storage->leaves[page->index].page=NULL;
+    }
+    memcpy(page->entries, entries, sizeof(entries));
+    page->index=index; page->dirty=0;
+    leaf->page=page;
+    touch_leaf(cache, page);
+    return 0;
 }
 
 // Copy a protected leaf once per checkpoint and queue modified leaves once.
 static int writable_leaf(struct storage *storage, size_t index)
 {
     struct leaf *leaf=&storage->leaves[index];
-    if (!leaf->entries)
-    {
-        leaf->entries=calloc(512, 8);
-        if (!leaf->entries) return -ENOMEM;
-    }
+    int result=load_leaf(storage, index, 1);
+    if (result) return result;
     uint64_t old=storage->root[index];
     if (!old || protected_block(storage, old))
     {
         uint64_t ref;
         size_t count;
-        int result=allocate_blocks(storage, 1, &ref, &count);
+        result=allocate_blocks(storage, 1, &ref, &count);
         if (result) return result;
         storage->root[index]=ref;
         release_blocks(storage, old, 1);
@@ -349,6 +400,7 @@ static int writable_leaf(struct storage *storage, size_t index)
         leaf->dirty=1;
         pthread_mutex_unlock(&storage->allocation);
     }
+    leaf->page->dirty=1;
     __atomic_store_n(&storage->changed, 1, __ATOMIC_RELAXED);
     return 0;
 }
@@ -358,7 +410,7 @@ static size_t contiguous_size(struct storage *storage, size_t index, off_t offse
 {
     size_t entry=(offset/4096)%512, length=4096-offset%4096;
     if (length > size) return size;
-    uint64_t *entries=storage->leaves[index].entries;
+    uint64_t *entries=storage->leaves[index].page ? storage->leaves[index].page->entries : NULL;
     uint64_t part_end=ref ? ((ref-1)/storage->capacity+1)*storage->capacity : 0;
     while (length < size && ++entry < 512)
     {
@@ -383,10 +435,10 @@ int storage_read(struct storage *storage, void *buffer, size_t size, off_t offse
     while (total < size)
     {
         size_t index=offset/(4096*512);
-        pthread_mutex_t *lock=&storage->stripes[index%LOCK_COUNT];
+        pthread_mutex_t *lock=&storage->stripes[leaf_stripe(index)];
         pthread_mutex_lock(lock);
-        result=load_leaf(storage, index);
-        uint64_t ref=storage->leaves[index].entries ? storage->leaves[index].entries[(offset/4096)%512] : 0;
+        result=load_leaf(storage, index, 0);
+        uint64_t ref=storage->leaves[index].page ? storage->leaves[index].page->entries[(offset/4096)%512] : 0;
         size_t length=contiguous_size(storage, index, offset, size-total, ref);
         if (!result && ref) result=read_physical(storage, ref, buffer, length, offset%4096);
         if (!result && !ref) memset(buffer, 0, length);
@@ -412,11 +464,11 @@ int storage_write(struct storage *storage, const void *buffer, size_t size, off_
         size_t index=offset/(4096*512), entry=(offset/4096)%512;
         size_t length=4096-offset%4096;
         if (length > size-total) length=size-total;
-        pthread_mutex_t *lock=&storage->stripes[index%LOCK_COUNT];
+        pthread_mutex_t *lock=&storage->stripes[leaf_stripe(index)];
         pthread_mutex_lock(lock);
-        result=load_leaf(storage, index);
+        result=load_leaf(storage, index, 0);
         if (result) goto written;
-        uint64_t old=storage->leaves[index].entries ? storage->leaves[index].entries[entry] : 0;
+        uint64_t old=storage->leaves[index].page ? storage->leaves[index].page->entries[entry] : 0;
         if (!old && !memcmp(buffer, zero, length)) goto written;
         int copy=!old || protected_block(storage, old);
         if (copy)
@@ -424,7 +476,7 @@ int storage_write(struct storage *storage, const void *buffer, size_t size, off_
             result=writable_leaf(storage, index);
             if (result) goto written;
         }
-        uint64_t *entries=storage->leaves[index].entries;
+        uint64_t *entries=storage->leaves[index].page->entries;
         if (length==4096)
         {
             size_t maximum=(size-total)/4096;
@@ -487,12 +539,12 @@ int storage_read_extent(struct storage *storage, off_t offset, size_t size, int 
     size_t index=offset/(4096*512);
     int result;
     enter_io(storage);
-    pthread_mutex_t *lock=&storage->stripes[index%LOCK_COUNT];
+    pthread_mutex_t *lock=&storage->stripes[leaf_stripe(index)];
     pthread_mutex_lock(lock);
-    result=load_leaf(storage, index);
+    result=load_leaf(storage, index, 0);
     if (!result)
     {
-        uint64_t ref=storage->leaves[index].entries ? storage->leaves[index].entries[(offset/4096)%512] : 0;
+        uint64_t ref=storage->leaves[index].page ? storage->leaves[index].page->entries[(offset/4096)%512] : 0;
         if (ref && contiguous_size(storage, index, offset, size, ref)==size)
         {
             int pinned=1;
@@ -515,16 +567,11 @@ int storage_read_extent(struct storage *storage, off_t offset, size_t size, int 
     return result;
 }
 
-// Rebuild free-word summaries from existing extents, preferring adjacent low slots.
+// Seed free-run summaries once, excluding gaps between physical files.
 static void expose_free_blocks(struct storage *storage)
 {
     for (size_t i=0; i < storage->part_count; i++)
         map_make_available(&storage->map, i*storage->capacity, storage->parts[i].blocks);
-    for (size_t i=0; i < storage->map.free_count/2; i++)
-    {
-        size_t other=storage->map.free_count-1-i, word=storage->map.free_words[i];
-        storage->map.free_words[i]=storage->map.free_words[other]; storage->map.free_words[other]=word;
-    }
 }
 
 // Append metadata changes; compact only when the bounded log cannot accept them.
@@ -533,9 +580,8 @@ static int sync_locked(struct storage *storage)
     for (size_t i=0; i < storage->dirty_count; i++)
     {
         size_t index=storage->dirty_leaves[i];
-        uint64_t entries[512];
-        for (size_t j=0; j < 512; j++) entries[j]=htole64(storage->leaves[index].entries[j]);
-        int result=write_physical(storage, storage->root[index], entries, 4096, 0);
+        struct leaf_page *page=storage->leaves[index].page;
+        int result=page ? spill_leaf(storage, page) : 0;
         if (result) return result;
     }
     for (size_t i=0; i < storage->part_count; i++)
@@ -553,11 +599,12 @@ static int sync_locked(struct storage *storage)
                                   storage->root, storage->map.used, storage->sequence+1};
         int result=storage->force_snapshot ? -E2BIG : journal_append(storage->path, &snapshot,
             storage->map.checkpoint, (storage->checkpoint_slots+63)/64, storage->checkpoint_roots,
-            storage->dirty_leaves, storage->dirty_count, &storage->log_length);
+            storage->dirty_leaves, storage->dirty_count, storage->map.dirty_words, storage->map.dirty_count,
+            &storage->journal_fd, &storage->log_length);
         if (result==-E2BIG)
         {
             result=snapshot_replace(storage->path, ".work", &snapshot, NULL);
-            if (!result) result=journal_reset(storage->path);
+            if (!result) result=journal_reset(storage->path, &storage->journal_fd);
             if (!result) storage->log_length=0;
         }
         if (result)
@@ -572,7 +619,6 @@ static int sync_locked(struct storage *storage)
         storage->checkpoint_roots=storage->root_count;
         storage->force_snapshot=0;
         map_checkpoint(&storage->map);
-        expose_free_blocks(storage);
         storage->changed=0;
     }
     for (size_t i=0; i < storage->dirty_count; i++) storage->leaves[storage->dirty_leaves[i]].dirty=0;
@@ -582,8 +628,15 @@ static int sync_locked(struct storage *storage)
 }
 
 // Remove obsolete recovery files only after their replacement or rollback is durable.
-static int discard_checkpoints(const char *path, int keep_work)
+static int discard_checkpoints(struct storage *storage, int keep_work)
 {
+    const char *path=storage->path;
+    if (storage->journal_fd >= 0)
+    {
+        int fd=storage->journal_fd;
+        storage->journal_fd=-1;
+        if (close(fd)) return -errno;
+    }
     const char *suffixes[]={".work", ".next", ".log", ".migrate"};
     for (size_t i=keep_work ? 1 : 0; i < sizeof(suffixes)/sizeof(*suffixes); i++)
     {
@@ -659,7 +712,7 @@ int storage_finish(struct storage *storage)
                                       storage->root, storage->map.used, storage->sequence};
             result=snapshot_publish(storage->path, &snapshot);
         }
-        if (!result) result=discard_checkpoints(storage->path, 0);
+        if (!result) result=discard_checkpoints(storage, 0);
         if (!result) result=trim_parts(storage, 0);
     }
     if (!result) storage->finished=1;
@@ -679,6 +732,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     struct storage *storage=calloc(1, sizeof(*storage));
     if (!storage) return -ENOMEM;
     storage->lock_fd=-1;
+    storage->journal_fd=-1;
     for (size_t i=0; i < MAX_PARTS; i++) storage->parts[i].fd=-1;
     pthread_mutex_init(&storage->allocation, NULL);
     pthread_mutex_init(&storage->gate, NULL);
@@ -829,7 +883,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     for (size_t i=storage->part_count; i-- > 0;)
         if (storage->parts[i].blocks < storage->capacity) storage->tails[storage->tail_count++]=i;
     // Persist discarded checkpoints before removing the marker that suppresses recovery.
-    error=discard_checkpoints(storage->path, continuing);
+    error=discard_checkpoints(storage, continuing);
     if (error) goto failed;
     if (marker >= 0 && !continuing)
     {
@@ -854,9 +908,10 @@ failed:
 void storage_close(struct storage *storage)
 {
     if (!storage) return;
+    if (storage->journal_fd >= 0) close(storage->journal_fd);
     for (size_t i=0; i < MAX_PARTS; i++) if (storage->parts[i].fd >= 0) close(storage->parts[i].fd);
     if (storage->leaves)
-        for (size_t i=0; i < storage->root_count; i++) free(storage->leaves[i].entries);
+        for (size_t i=0; i < storage->root_count; i++) free(storage->leaves[i].page);
     free(storage->leaves); free(storage->root); free(storage->dirty_leaves);
     map_destroy(&storage->map);
     if (storage->lock_fd >= 0)

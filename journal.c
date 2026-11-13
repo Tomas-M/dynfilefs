@@ -18,7 +18,8 @@ struct journal_header
 // Append absolute metadata changes only after their referenced data has been synced.
 int journal_append(const char *path, const struct snapshot *snapshot,
                    const uint64_t *previous_bits, size_t previous_words, size_t previous_root_count,
-                   const size_t *dirty_roots, size_t dirty_count, uint64_t *length)
+                   const size_t *dirty_roots, size_t dirty_root_count,
+                   const size_t *dirty_words, size_t dirty_word_count, int *fd, uint64_t *length)
 {
     size_t metadata_length;
     int result=snapshot_length(snapshot, &metadata_length);
@@ -29,11 +30,15 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     size_t root_growth=snapshot->root_count > previous_root_count ? snapshot->root_count-previous_root_count : 0;
     size_t word_growth=words > previous_words ? words-previous_words : 0;
     if (root_growth+word_growth > JOURNAL_LIMIT/8) return -E2BIG;
-    for (size_t i=0; i < words; i++)
-        if (snapshot->bits[i]!=(i < previous_words ? previous_bits[i] : 0)) changed++;
+    // The caller lists each touched word once; trimmed zero words need no record entry.
+    for (size_t i=0; i < dirty_word_count; i++)
+    {
+        size_t index=dirty_words[i];
+        if (index < words && snapshot->bits[index]!=(index < previous_words ? previous_bits[index] : 0)) changed++;
+    }
     size_t maximum=(JOURNAL_LIMIT-sizeof(struct journal_header))/16;
-    if (dirty_count > maximum || changed > maximum-dirty_count) return -E2BIG;
-    size_t size=(sizeof(struct journal_header)+(dirty_count+changed)*16+4095)&~(size_t)4095;
+    if (dirty_root_count > maximum || changed > maximum-dirty_root_count) return -E2BIG;
+    size_t size=(sizeof(struct journal_header)+(dirty_root_count+changed)*16+4095)&~(size_t)4095;
     if (size > JOURNAL_LIMIT-*length) return -E2BIG;
     unsigned char *bytes=calloc(1, size);
     if (!bytes) return -ENOMEM;
@@ -41,25 +46,31 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     memcpy(header->magic, "DYNLOG01", 8);
     header->length=htole64(size); header->sequence=htole64(snapshot->sequence);
     header->size=htole64(snapshot->size); header->slots=htole64(snapshot->slots);
-    header->roots=htole64(dirty_count); header->words=htole64(changed);
+    header->roots=htole64(dirty_root_count); header->words=htole64(changed);
     uint64_t *pairs=(uint64_t *)(bytes+sizeof(*header));
-    for (size_t i=0; i < dirty_count; i++)
+    for (size_t i=0; i < dirty_root_count; i++)
     {
         size_t index=dirty_roots[i];
         if (index >= snapshot->root_count) { free(bytes); return -EINVAL; }
         *pairs++=htole64(index); *pairs++=htole64(snapshot->root[index]);
     }
-    for (size_t i=0; i < words; i++)
-        if (snapshot->bits[i]!=(i < previous_words ? previous_bits[i] : 0))
-        { *pairs++=htole64(i); *pairs++=htole64(snapshot->bits[i]); }
+    for (size_t i=0; i < dirty_word_count; i++)
+    {
+        size_t index=dirty_words[i];
+        if (index < words && snapshot->bits[index]!=(index < previous_words ? previous_bits[index] : 0))
+        { *pairs++=htole64(index); *pairs++=htole64(snapshot->bits[index]); }
+    }
     header->checksum=htole64(metadata_checksum(bytes, size));
-    int fd=open_suffix(path, ".log", O_WRONLY|O_CREAT);
-    if (fd < 0) { free(bytes); return fd; }
-    result=write_at(fd, bytes, size, (off_t)*length);
+    if (*fd < 0)
+    {
+        int opened=open_suffix(path, ".log", O_WRONLY|O_CREAT);
+        if (opened < 0) { free(bytes); return opened; }
+        *fd=opened;
+    }
+    result=write_at(*fd, bytes, size, (off_t)*length);
     free(bytes);
-    if (!result && ftruncate(fd, (off_t)(*length+size))) result=-errno;
-    if (!result && fsync(fd)) result=-errno;
-    if (close(fd) && !result) result=-errno;
+    if (!result && ftruncate(*fd, (off_t)(*length+size))) result=-errno;
+    if (!result && fsync(*fd)) result=-errno;
     if (!result && !*length) result=sync_directory(path);
     if (!result) *length+=size;
     return result;
@@ -172,8 +183,15 @@ int journal_replay(const char *path, struct snapshot *snapshot, int *replayed)
 }
 
 // Remove obsolete records only after their replacement or rollback choice is durable.
-int journal_reset(const char *path)
+int journal_reset(const char *path, int *fd)
 {
+    // Invalidate before close, and never keep a descriptor to an unlinked journal.
+    if (*fd >= 0)
+    {
+        int previous=*fd;
+        *fd=-1;
+        if (close(previous)) return -errno;
+    }
     char name[PATH_MAX];
     int result=storage_name(name, path, ".log");
     if (!result && unlink(name) && errno!=ENOENT) result=-errno;

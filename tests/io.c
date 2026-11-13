@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "../storage.h"
+#include "../format.h"
 #include <assert.h>
 #include <endian.h>
 #include <errno.h>
@@ -18,6 +19,8 @@
 static ssize_t write_budget=-1;
 static ssize_t log_write_budget=-1;
 static size_t write_limit;
+static size_t measured_writes;
+static int measure_writes;
 static const char *fail_after_marker;
 static int fail_sync, fail_log_sync, fail_directory_sync, fail_rename, fail_after_rename, sync_calls, delay_writes, active_writes, overlap, stop_writes;
 
@@ -43,6 +46,7 @@ static int log_descriptor(int fd)
 static ssize_t fault_write(int fd, const void *buffer, size_t size, off_t offset,
                           ssize_t (*write_fn)(int, const void *, size_t, off_t))
 {
+    if (measure_writes) measured_writes++;
     int log_fault=log_write_budget >= 0 && log_descriptor(fd);
     if (log_fault && !log_write_budget) { errno=ENOSPC; return -1; }
     if (log_fault && size > (size_t)log_write_budget) size=(size_t)log_write_budget;
@@ -885,6 +889,50 @@ static void check_short_leaf(const char *path)
     puts("PASS: truncated lazy index page reports read failure");
 }
 
+// Large writes must find a free extent beyond many isolated holes and survive rollback.
+static void check_fragmented_runs(const char *path)
+{
+    uint64_t root[2]={1, 0}, bits[16]={0}, entries[512]={0};
+    for (size_t slot=0; slot < 256; slot+=2)
+    {
+        bits[slot/64]|=UINT64_C(1)<<(slot%64);
+        if (slot) entries[slot/2-1]=htole64(slot+1);
+    }
+    bits[15]=UINT64_C(1)<<63;
+    entries[127]=htole64(1024);
+    struct snapshot snapshot={4*MIB, 4*MIB, 1024, 2, root, bits, 0};
+    int fd=open_suffix(path, ".0", O_RDWR|O_CREAT|O_EXCL);
+    assert(fd >= 0 && !ftruncate(fd, 4*MIB));
+    assert(!write_at(fd, entries, sizeof(entries), 0) && !fsync(fd));
+    close(fd);
+    assert(!snapshot_publish(path, &snapshot));
+    struct storage *storage=NULL;
+    assert(!storage_open(&storage, path, 0, 0, 0, 0));
+    unsigned char *input=malloc(MIB), *output=malloc(MIB);
+    assert(input && output);
+    memset(input, 'R', MIB);
+    measured_writes=0; measure_writes=1;
+    assert(storage_write(storage, input, MIB, 2*MIB)==MIB);
+    measure_writes=0;
+    assert(measured_writes==1);
+    assert(!storage_sync(storage));
+    assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
+    assert(!storage_set_rollback(storage, 1) && !storage_finish(storage));
+    storage_close(storage);
+    assert(!storage_open(&storage, path, 0, 0, 0, 1));
+    assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
+    assert(!storage_finish(storage));
+    storage_close(storage);
+    assert(!storage_open(&storage, path, 0, 0, 0, 0));
+    memset(input, 0, MIB);
+    assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
+    assert(storage_read(storage, output, MIB, 0)==MIB && !memcmp(input, output, MIB));
+    assert(!storage_finish(storage));
+    storage_close(storage);
+    free(input); free(output);
+    puts("PASS: fragmented recycling keeps a 1 MiB write contiguous and preserves rollback");
+}
+
 // Keep every test image in a uniquely owned directory supplied by the test runner.
 int main(int argc, char **argv)
 {
@@ -893,6 +941,7 @@ int main(int argc, char **argv)
     assert(snprintf(directory, sizeof(directory), "%s/io-XXXXXX", argv[1]) < (int)sizeof(directory));
     assert(mkdtemp(directory));
     assert(snprintf(path, sizeof(path), "%s/io", directory) < (int)sizeof(path)); check_io(path);
+    assert(snprintf(path, sizeof(path), "%s/fragmented", directory) < (int)sizeof(path)); check_fragmented_runs(path);
     assert(snprintf(path, sizeof(path), "%s/faults", directory) < (int)sizeof(path)); check_faults(path);
     assert(snprintf(path, sizeof(path), "%s/checkpoints", directory) < (int)sizeof(path)); check_checkpoints(path);
     assert(snprintf(path, sizeof(path), "%s/journal-faults", directory) < (int)sizeof(path)); check_journal_faults(path);

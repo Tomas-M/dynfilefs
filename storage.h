@@ -9,6 +9,10 @@
 #define DYN_LEAF_ENTRIES 512
 #define DYN_FORMAT 600
 #define DYN_MAX_PARTS 9999
+// Bound resident 4 KiB index pages; storage.c partitions them across its I/O locks.
+#ifndef DYN_CACHE_PAGES
+#define DYN_CACHE_PAGES 8192
+#endif
 
 struct storage;
 

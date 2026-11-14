@@ -55,7 +55,7 @@ int __wrap_renameat(int olddir, const char *oldname, int newdir, const char *new
 static struct storage *open_store(const char *path, uint64_t size, const char *restore)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, size, 0, MIB, restore));
+    assert(!storage_open(&storage, path, size, 0, MIB, restore, NULL, 0));
     return storage;
 }
 
@@ -432,6 +432,57 @@ static void check_sparse(const char *path)
     puts("PASS: restored sizes, retained larger views, sparse unaligned maps and EOF bounds");
 }
 
+// A queued ID survives recovery pruning before FUSE can open a runtime snapshot handle.
+static void check_mount_protection(const char *path)
+{
+    struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
+    char *names=NULL;
+    assert(storage_snapshot_list(storage, &names)>0);
+    char *newline=strchr(names, '\n');
+    if (newline) *newline=0;
+    struct snapshot first=named_record(path, names, 0);
+    free(names);
+    finish_store(storage);
+    for (int i=1; i < 10; i++)
+    {
+        storage=open_store(path, 0, NULL);
+        write_payload(storage, (unsigned char)i);
+        finish_store(storage);
+    }
+    assert(automatic_points(path)==10);
+    storage=open_store(path, 0, NULL);
+    write_payload(storage, 'Z'); assert(!storage_sync(storage));
+    storage_close(storage); // Interrupted mount: next open must recover and create point eleven.
+    storage=NULL;
+    assert(!storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1));
+    check_payload(storage, NULL, 'Z');
+    check_saved(storage, first.name, 0);
+    assert(automatic_points(path)==10);
+    assert(storage_snapshot_delete(storage, first.name)==-EBUSY);
+    struct storage_info current;
+    assert(!storage_get_info(storage, &current));
+    assert(!storage_snapshot_protect(storage, current.parent, 1));
+    assert(storage_snapshot_protect(storage, UINT64_MAX, 1)==-ENOENT);
+    assert(!storage_snapshot_create(storage, "Before pending restore"));
+    write_payload(storage, 'Y');
+    assert(!storage_finish(storage));
+    check_saved(storage, first.name, 0);
+    assert(!storage_snapshot_protect(storage, current.parent, 0));
+    char *catalog=NULL;
+    assert(storage_snapshot_report(storage, 1, &catalog)>0 && strstr(catalog, "\"protected\":true"));
+    free(catalog);
+    storage_close(storage);
+    storage=open_store(path, 0, NULL);
+    assert(!storage_snapshot_delete(storage, first.name));
+    finish_store(storage);
+    storage=NULL;
+    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1)==-ENOENT && !storage);
+    uint64_t missing=UINT64_MAX;
+    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &missing, 1)==-ENOENT && !storage);
+    snapshot_free(&first);
+    puts("PASS: exact mount protection survives recovery/finish pruning and expires only at close");
+}
+
 // Every fixture lives in its own directory and remains inspectable on failure.
 int main(int argc, char **argv)
 {
@@ -447,5 +498,6 @@ int main(int argc, char **argv)
     assert(snprintf(path, sizeof(path), "%s/parent-failure", directory) < (int)sizeof(path)); check_parent_failure(path);
     assert(snprintf(path, sizeof(path), "%s/concurrent", directory) < (int)sizeof(path)); check_concurrent(path);
     assert(snprintf(path, sizeof(path), "%s/sparse", directory) < (int)sizeof(path)); check_sparse(path);
+    assert(snprintf(path, sizeof(path), "%s/protection", directory) < (int)sizeof(path)); check_mount_protection(path);
     return 0;
 }

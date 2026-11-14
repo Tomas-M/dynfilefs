@@ -225,7 +225,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
             {
                 char *label=strdup(saved.name);
                 if (!label) result=-ENOMEM;
-                else records[count++]=(struct snapshot_record){saved.id, saved.parent, saved.created, saved.size, label};
+                else records[count++]=(struct snapshot_record){saved.id, saved.parent, saved.created, saved.size, label, 0};
             }
             snapshot_free(&saved);
             if (result) break;

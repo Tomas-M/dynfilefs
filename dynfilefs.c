@@ -48,6 +48,13 @@ static int snapshot_name(const char *path, char *name)
     return 1;
 }
 
+// Exact IDs are shared by startup and live protection, never resolved through reusable names.
+static uint64_t parse_id(const char *text)
+{
+    if (strlen(text)!=16 || strspn(text, "0123456789abcdef")!=16) return 0;
+    return strtoull(text, NULL, 16);
+}
+
 // Text handles keep one complete report while other requests change live state.
 static int text_file(const char *path)
 {
@@ -237,11 +244,17 @@ static int dynfilefs_write(const char *path, const char *buffer, size_t size, of
         memcpy(command, buffer, size);
         command[size]=0;
         if (command[size-1]=='\n') command[size-1]=0;
-        int create=!strncmp(command, "create ", 7);
-        if (!create && strncmp(command, "delete ", 7)) return -EINVAL;
+        int create=!strncmp(command, "create ", 7), protect=!strncmp(command, "protect ", 8);
+        const char *identity=NULL;
+        if (protect) identity=command+8;
+        else if (!strncmp(command, "unprotect ", 10)) identity=command+10;
+        uint64_t id=identity ? parse_id(identity) : 0;
+        if (identity && !id) return -EINVAL;
+        if (!identity && !create && strncmp(command, "delete ", 7)) return -EINVAL;
         if (pthread_mutex_trylock(&snapshot_commands)) return -EBUSY;
         int result;
-        if (create)
+        if (identity) result=storage_snapshot_protect(disk, id, protect);
+        else if (create)
         {
             struct filesystem_freeze *state=NULL;
             result=filesystem_freeze(virtual_directory, virtual_path, &state);
@@ -357,7 +370,7 @@ static const struct fuse_operations operations={
 static void usage(const char *program)
 {
     printf("DynFileFS 6.02 (storage format %d)\n\n", DYN_FORMAT);
-    printf("usage: %s -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME]\n", program);
+    printf("usage: %s -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]\n", program);
     printf("       %s -o size=size_MiB,split=split_MiB storage_file mount_dir\n", program);
     printf("       %s -f storage_file --info|--snapshots [--json]\n", program);
     printf("\n");
@@ -371,11 +384,12 @@ static void usage(const char *program)
     printf("  --snapshots          Show the saved history tree, including deleted ancestors.\n");
     printf("  --json               Return --info or --snapshots as JSON.\n");
     printf("  --restore NAME       Start from a saved point; also available as -o restore=NAME.\n");
+    printf("  --protect ID         Retain an exact snapshot ID throughout this mount; repeat for more IDs.\n");
     printf("\nFormat-500 storage converts automatically on its first mount.\n");
     printf("Each session starts at a saved point; a changed clean unmount creates a new one.\n");
     printf("The latest ten automatic points are retained; manually named points stay until deleted.\n");
     printf("After interruption, the last successful fsync is recovered.\n");
-    printf("Read mount_dir/snapshot to list saved names; write 'create NAME' or 'delete NAME'.\n");
+    printf("Read mount_dir/snapshot to list saved names; write 'create NAME', 'delete NAME', 'protect ID' or 'unprotect ID'.\n");
     printf("Creation freezes a detected direct loop-mounted ext4/XFS filesystem automatically.\n");
     printf("Saved images are read-only files at mount_dir/snapshots/NAME.dat.\n");
     printf("Read stats and snapshots.json for live JSON capacity and history reports.\n");
@@ -397,10 +411,23 @@ static uint64_t parse_size(const char *value)
     return (uint64_t)size*1024*1024;
 }
 
+// Repeated startup protections cover an existing selection and an independently requested view.
+static void add_protection(const char *text, uint64_t **ids, size_t *count)
+{
+    uint64_t id=parse_id(text);
+    if (!id) { fprintf(stderr, "--protect requires a nonzero 16-digit lowercase hexadecimal ID.\n"); exit(1); }
+    if (*count==SIZE_MAX/sizeof(**ids)) { fprintf(stderr, "Too many protected snapshots.\n"); exit(1); }
+    uint64_t *grown=realloc(*ids, (*count+1)*sizeof(**ids));
+    if (!grown) { perror("Cannot protect snapshot"); exit(1); }
+    *ids=grown; grown[(*count)++]=id;
+}
+
 // Parse mount and fstab options.
 int main(int argc, char **argv)
 {
     const char *file="", *mount="", *restore=NULL;
+    uint64_t *protected_ids=NULL;
+    size_t protected_count=0;
     uint64_t size=0, increase=0, split=0;
     int debug=0, info=0, snapshots=0, json=0, mount_options=0, option;
     static const struct option options[]={
@@ -414,12 +441,13 @@ int main(int argc, char **argv)
         {"snapshots", no_argument, NULL, 'S'},
         {"json", no_argument, NULL, 'j'},
         {"restore", required_argument, NULL, 'r'},
+        {"protect", required_argument, NULL, 'P'},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0},
     };
-    while ((option=getopt_long(argc, argv, "f:m:s:p:o:r:dih", options, NULL)) != -1)
+    while ((option=getopt_long(argc, argv, "f:m:s:p:o:r:P:dih", options, NULL)) != -1)
     {
-        if (strchr("mspodr", option)) mount_options=1;
+        if (strchr("mspodrP", option)) mount_options=1;
         switch (option)
         {
             case 'f': file=optarg; break;
@@ -431,6 +459,7 @@ int main(int argc, char **argv)
             case 'S': snapshots=1; break;
             case 'j': json=1; break;
             case 'r': restore=optarg; break;
+            case 'P': add_protection(optarg, &protected_ids, &protected_count); break;
             case 'h': usage(argv[0]); return 0;
             case 'o':
             {
@@ -444,6 +473,7 @@ int main(int argc, char **argv)
                     }
                     else if (!strncmp(value, "split=", 6)) split=parse_size(value+6);
                     else if (!strncmp(value, "restore=", 8)) restore=value+8;
+                    else if (!strncmp(value, "protect=", 8)) add_protection(value+8, &protected_ids, &protected_count);
                 }
                 break;
             }
@@ -492,7 +522,8 @@ int main(int argc, char **argv)
     int length=snprintf(virtual_path, sizeof(virtual_path), "%s%s", name, disk_path);
     free(name);
     if (length >= (int)sizeof(virtual_path)) { close(virtual_directory); fprintf(stderr, "Mount directory is too long.\n"); return 1; }
-    error=storage_open(&disk, file, size, increase, split, restore);
+    error=storage_open(&disk, file, size, increase, split, restore, protected_ids, protected_count);
+    free(protected_ids);
     if (error)
     {
         fprintf(stderr, "Cannot open storage: %s\n", strerror(-error));

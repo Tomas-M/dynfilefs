@@ -6,7 +6,7 @@ is written and can be split to fit FAT32.
 ## Usage
 
 ```sh
-dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME]
+dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]
 ```
 
 - `-f`: backing metadata file; data parts use `.0`, `.1`, etc.
@@ -20,6 +20,17 @@ dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--rest
 - `--snapshots`: inspect the saved history tree before mounting.
 - `--json`: JSON output for `--info` or `--snapshots`.
 - `--restore NAME` or `-o restore=NAME`: start a new mounted session from a named snapshot.
+- `--protect ID` or `-o protect=ID` (repeatable): retain an exact live 16-digit lowercase hexadecimal
+  snapshot ID throughout this mount, including recovery, automatic pruning and clean
+  unmount. Deletion returns `EBUSY`. Missing/deleted IDs fail instead of selecting a reused
+  name. This does not restore the image or persist a pin: a caller with a durable pending
+  request must supply the option again on subsequent mounts. The storage format is unchanged.
+  While mounted, write `protect ID` or `unprotect ID` to `snapshot` to change protection.
+  Multiple IDs can be protected: protect a new target before committing a changed selection,
+  then unprotect the old target only after the caller's metadata is durable. This closes
+  the selection-update crash window without requiring a clean shutdown hook. Runtime
+  protection survives the caller's exit; it ends when DynFileFS itself closes the store.
+  Live catalog entries expose `protected`; offline entries report false.
 
 ```sh
 dynfilefs -i -f /var/lib/changes.dat
@@ -116,7 +127,7 @@ dynfilefs -f /var/lib/changes.dat --snapshots --json
 ```
 
 JSON contains `currentParent` and a `snapshots` array. Each node has `id`, `parent`,
-`name`, `created` (Unix seconds), `deleted` and `automatic`. IDs are strings so they
+`name`, `created` (Unix seconds), `deleted`, `automatic` and `protected`. IDs are strings so they
 remain exact in JavaScript. The tree marks the snapshot on which the current state
 is based; it does not mean that unsaved current writes equal that snapshot.
 
@@ -143,7 +154,7 @@ ls /mnt/changes/snapshots/
 ```
 
 Reading `snapshot` returns one saved name per line. Each write must contain one complete
-`create NAME` or `delete NAME` command, with an optional final newline. Names may contain
+`create NAME`, `delete NAME`, `protect ID` or `unprotect ID` command, with an optional final newline. Names may contain
 international text and spaces; shell-quote them as needed. Names cannot end in a dot or
 space, contain control characters, path separators or FAT-incompatible punctuation,
 or exceed 250 UTF-8 bytes. The `auto-` prefix is reserved for system-created points.

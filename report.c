@@ -87,8 +87,8 @@ int snapshot_report(const struct snapshot_record *records, size_t count, uint64_
             fputs("{\"id\":", stream); write_id(stream, sorted[i].id);
             fputs(",\"parent\":", stream); write_id(stream, sorted[i].parent);
             fputs(",\"name\":", stream); write_name(stream, sorted[i].name);
-            fprintf(stream, ",\"created\":%" PRIu64 ",\"deleted\":%s,\"automatic\":%s}", sorted[i].created,
-                sorted[i].size ? "false" : "true", !strncmp(sorted[i].name, "auto-", 5) ? "true" : "false");
+            fprintf(stream, ",\"created\":%" PRIu64 ",\"deleted\":%s,\"automatic\":%s,\"protected\":%s}", sorted[i].created,
+                sorted[i].size ? "false" : "true", !strncmp(sorted[i].name, "auto-", 5) ? "true" : "false", sorted[i].protected ? "true" : "false");
         }
         fputs("]}\n", stream);
     }

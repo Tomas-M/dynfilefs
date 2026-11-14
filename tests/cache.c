@@ -87,7 +87,7 @@ int __wrap_fsync(int fd)
 static struct storage *open_store(const char *path, const char *restore)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, (REGION_COUNT+1)*REGION_SIZE, 0, 4*1024*1024, restore));
+    assert(!storage_open(&storage, path, (REGION_COUNT+1)*REGION_SIZE, 0, 4*1024*1024, restore, NULL, 0));
     return storage;
 }
 

@@ -129,7 +129,7 @@ def check_tree(binary, root):
         (directory/(f'{point:016x}.snap')).write_bytes(data)
     storage.write_bytes(snapshot(4*MiB, parent=4))
     expected={'currentParent':'0000000000000004', 'snapshots':[
-        {'id':f'{point:016x}', 'parent':f'{parent:016x}' if parent else None, 'name':name, 'created':1700000000, 'deleted':point==2, 'automatic':False}
+        {'id':f'{point:016x}', 'parent':f'{parent:016x}' if parent else None, 'name':name, 'created':1700000000, 'deleted':point==2, 'automatic':False, 'protected':False}
         for point,(name,parent) in enumerate(zip(names, parents),1)
     ]}
     inspect(binary, root, ['--snapshots', '--json', '-f', str(storage)], expected, True)

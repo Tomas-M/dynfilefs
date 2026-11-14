@@ -38,6 +38,7 @@ struct storage_snapshot
     char *name;
     uint64_t id, parent, created, size;
     size_t users;
+    int protected;
     struct snapshot state;
     struct storage_snapshot *next;
 };
@@ -796,7 +797,7 @@ static int create_snapshot_locked(struct storage *storage, const char *name)
 // Retain only ancestry metadata after the deletion is durable, then release exclusive slots.
 static int delete_snapshot_locked(struct storage *storage, struct storage_snapshot *entry)
 {
-    if (entry->users) return -EBUSY;
+    if (entry->users || entry->protected) return -EBUSY;
     uint64_t *bits=calloc(storage->map.words ? storage->map.words : 1, 8);
     if (!bits) return -ENOMEM;
     int result=remaining_snapshot_bits(storage, entry, bits);
@@ -826,7 +827,7 @@ static int prune_snapshots(struct storage *storage)
     for (struct storage_snapshot *entry=storage->snapshots; entry && count > 10; entry=entry->next)
     {
         int automatic=entry->size && !strncmp(entry->name, "auto-", 5);
-        if (!automatic || entry->users || entry->id==storage->parent) continue;
+        if (!automatic || entry->users || entry->id==storage->parent || entry->protected) continue;
         int result=delete_snapshot_locked(storage, entry);
         if (result) return result;
         count--;
@@ -892,6 +893,17 @@ int storage_snapshot_delete(struct storage *storage, const char *name)
     return result;
 }
 
+// Protect exact identities through this mount's final pruning, independently of reader caches.
+int storage_snapshot_protect(struct storage *storage, uint64_t id, int protect)
+{
+    enter_barrier(storage);
+    struct storage_snapshot *entry=snapshot_id(storage, id);
+    int result=entry && entry->size ? 0 : -ENOENT;
+    if (!result) entry->protected=!!protect;
+    leave_barrier(storage);
+    return result;
+}
+
 // Return one chronological listing of restorable names for the control file and directory.
 int storage_snapshot_list(struct storage *storage, char **result)
 {
@@ -927,7 +939,7 @@ int storage_snapshot_report(struct storage *storage, int json, char **result)
     if (!records) { leave_io(storage); return -ENOMEM; }
     size_t i=0;
     for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next)
-        records[i++]=(struct snapshot_record){entry->id, entry->parent, entry->created, entry->size, entry->name};
+        records[i++]=(struct snapshot_record){entry->id, entry->parent, entry->created, entry->size, entry->name, entry->protected};
     int length=snapshot_report(records, count, storage->parent, json, result);
     free(records);
     leave_io(storage);
@@ -1068,7 +1080,7 @@ uint64_t storage_size(struct storage *storage)
 }
 
 // Recover current state, select an optional saved branch, and preserve the session's starting point.
-int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, const char *restore)
+int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, const char *restore, const uint64_t *protect, size_t protected_count)
 {
     struct storage *storage=calloc(1, sizeof(*storage));
     if (!storage) return -ENOMEM;
@@ -1104,7 +1116,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     }
     else if (fd==-ENOENT)
     {
-        if (restore) { error=-ENOENT; goto failed; }
+        if (restore || protected_count) { error=-ENOENT; goto failed; }
         snapshot.size=size ? size : increase;
         snapshot.part_size=split ? split : UINT64_C(4088)*1024*1024;
         if (!snapshot.size || snapshot.size > INT64_MAX || snapshot.size%4096) { error=-EINVAL; goto failed; }
@@ -1158,6 +1170,13 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     error=map_init(&storage->map, snapshot.bits, snapshot.slots);
     if (!error) error=discover_snapshots(storage);
     if (error) goto failed;
+    // A caller's pending selection must survive recovery and the first automatic pruning.
+    for (size_t i=0; i < protected_count; i++)
+    {
+        struct storage_snapshot *entry=snapshot_id(storage, protect[i]);
+        if (!entry || !entry->size) { error=-ENOENT; goto failed; }
+        entry->protected=1;
+    }
     if (restore)
     {
         error=snapshot_name(restore);

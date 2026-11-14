@@ -17,7 +17,7 @@ interrupted mounts and descriptor-backed reads:
 ```sh
 test_dir=$(mktemp -d)
 cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c report.c \
-  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=rename -o "$test_dir/io"
+  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=renameat -o "$test_dir/io"
 "$test_dir/io" "$test_dir"
 cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c journal.c bitmap.c migration.c report.c \
   -pthread -Wl,--wrap=pread,--wrap=pread64,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/cache"

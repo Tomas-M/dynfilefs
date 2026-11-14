@@ -45,6 +45,24 @@ int write_at(int fd, const void *buffer, size_t size, off_t offset)
     return 0;
 }
 
+// Pin the containing directory before daemonization, rename or a root transition.
+int storage_path(const char *path, int *directory, char **name)
+{
+    char parent[PATH_MAX];
+    if (strlen(path) >= sizeof(parent)) return -ENAMETOOLONG;
+    strcpy(parent, path);
+    char *slash=strrchr(parent, '/'), *base=slash ? slash+1 : parent;
+    if (!*base) return -EINVAL;
+    char *filename=strdup(base);
+    if (!filename) return -ENOMEM;
+    if (slash) slash[slash==parent ? 1 : 0]=0;
+    else strcpy(parent, ".");
+    int fd=open(parent, O_PATH|O_DIRECTORY|O_CLOEXEC);
+    if (fd < 0) { int error=-errno; free(filename); return error; }
+    *directory=fd; *name=filename;
+    return 0;
+}
+
 // Keep all companion names within the platform path limit.
 int storage_name(char *name, const char *path, const char *suffix)
 {
@@ -52,17 +70,17 @@ int storage_name(char *name, const char *path, const char *suffix)
 }
 
 // Open an owned companion file without following a substituted symlink.
-int open_suffix(const char *path, const char *suffix, int flags)
+int open_suffix(int directory, const char *path, const char *suffix, int flags)
 {
     char name[PATH_MAX];
     int result=storage_name(name, path, suffix);
     if (result) return result;
-    int fd=open(name, flags|O_CLOEXEC|O_NOFOLLOW, 0600);
+    int fd=openat(directory, name, flags|O_CLOEXEC|O_NOFOLLOW, 0600);
     return fd < 0 ? -errno : fd;
 }
 
 // An opener may retain the old inode while the previous owner removes its name.
-static int current_lock(const char *path, int fd)
+static int current_lock(int directory, const char *path, int fd)
 {
     char name[PATH_MAX];
     int result=storage_name(name, path, ".lock");
@@ -70,18 +88,18 @@ static int current_lock(const char *path, int fd)
     struct stat held, current;
     if (fstat(fd, &held)) return -errno;
     if (!held.st_nlink) return 0;
-    if (lstat(name, &current)) return errno==ENOENT ? 0 : -errno;
+    if (fstatat(directory, name, &current, AT_SYMLINK_NOFOLLOW)) return errno==ENOENT ? 0 : -errno;
     return held.st_dev==current.st_dev && held.st_ino==current.st_ino;
 }
 
 // Verify the locked inode is still named before beginning any storage I/O.
-int lock_storage(const char *path)
+int lock_storage(int directory, const char *path)
 {
     for (;;)
     {
-        int fd=open_suffix(path, ".lock", O_RDWR|O_CREAT);
+        int fd=open_suffix(directory, path, ".lock", O_RDWR|O_CREAT);
         if (fd < 0) return fd;
-        int result=flock(fd, LOCK_EX|LOCK_NB) ? -errno : current_lock(path, fd);
+        int result=flock(fd, LOCK_EX|LOCK_NB) ? -errno : current_lock(directory, path, fd);
         if (result==1) return fd;
         close(fd);
         if (result < 0) return result;
@@ -89,15 +107,15 @@ int lock_storage(const char *path)
 }
 
 // Only a finished owner may remove its lock, after all other storage I/O has ended.
-int unlock_storage(const char *path, int fd)
+int unlock_storage(int directory, const char *path, int fd)
 {
-    int current=current_lock(path, fd), result=current < 0 ? current : 0;
+    int current=current_lock(directory, path, fd), result=current < 0 ? current : 0;
     if (current==1)
     {
         char name[PATH_MAX];
         storage_name(name, path, ".lock");
-        if (unlink(name)) result=-errno;
-        if (!result) result=sync_directory(path);
+        if (unlinkat(directory, name, 0)) result=-errno;
+        if (!result) result=sync_directory(directory, path);
     }
     else if (!current) result=-ESTALE;
     if (close(fd) && !result) result=-errno;
@@ -105,7 +123,7 @@ int unlock_storage(const char *path, int fd)
 }
 
 // Persist file creation, replacement and removal in the storage directory.
-int sync_directory(const char *path)
+int sync_directory(int directory, const char *path)
 {
     char name[PATH_MAX];
     if (strlen(path) >= sizeof(name)) return -ENAMETOOLONG;
@@ -113,7 +131,7 @@ int sync_directory(const char *path)
     char *slash=strrchr(name, '/');
     if (slash) slash[slash==name ? 1 : 0]=0;
     else strcpy(name, ".");
-    int fd=open(name, O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    int fd=openat(directory, name, O_RDONLY|O_DIRECTORY|O_CLOEXEC);
     if (fd < 0) return -errno;
     int result=fsync(fd) ? -errno : 0;
     close(fd);
@@ -250,10 +268,10 @@ int snapshot_write(int fd, const struct snapshot *snapshot)
 }
 
 // Replace a root/bitmap pair; report publication even if the directory flush fails.
-int snapshot_replace(const char *path, const char *suffix, const struct snapshot *snapshot, int *published)
+int snapshot_replace(int directory, const char *path, const char *suffix, const struct snapshot *snapshot, int *published)
 {
     if (published) *published=0;
-    int fd=open_suffix(path, ".next", O_RDWR|O_CREAT|O_TRUNC);
+    int fd=open_suffix(directory, path, ".next", O_RDWR|O_CREAT|O_TRUNC);
     if (fd < 0) return fd;
     int result=snapshot_write(fd, snapshot);
     if (close(fd) && !result) result=-errno;
@@ -262,17 +280,17 @@ int snapshot_replace(const char *path, const char *suffix, const struct snapshot
     if (!result) result=storage_name(target, path, suffix);
     if (!result)
     {
-        if (rename(name, target)) result=-errno;
+        if (renameat(directory, name, directory, target)) result=-errno;
         else if (published) *published=1;
     }
-    if (!result) result=sync_directory(path);
+    if (!result) result=sync_directory(directory, path);
     return result;
 }
 
 // Initial creation and conversion publish directly to the committed main file.
-int snapshot_publish(const char *path, const struct snapshot *snapshot)
+int snapshot_publish(int directory, const char *path, const struct snapshot *snapshot)
 {
-    return snapshot_replace(path, "", snapshot, NULL);
+    return snapshot_replace(directory, path, "", snapshot, NULL);
 }
 
 // Release the decoded snapshot arrays.

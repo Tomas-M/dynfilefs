@@ -44,7 +44,7 @@ struct storage_snapshot
 struct storage
 {
     char *path;
-    int lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot;
+    int directory_fd, lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot;
     uint64_t size, part_size, capacity, sequence, committed_sequence, log_length, checkpoint_slots, parent, max_id;
     size_t root_count, part_count, dirty_count, tail_count, checkpoint_roots;
     size_t tails[MAX_PARTS];
@@ -97,25 +97,6 @@ static void leave_barrier(struct storage *storage)
     pthread_mutex_unlock(&storage->gate);
 }
 
-// Resolve relative names before libfuse changes the daemon's working directory.
-static char *absolute_path(const char *path)
-{
-    char name[PATH_MAX];
-    if (strlen(path) >= sizeof(name)) { errno=ENAMETOOLONG; return NULL; }
-    strcpy(name, path);
-    char *slash=strrchr(name, '/'), *base=slash ? slash+1 : name;
-    if (!*base) { errno=EINVAL; return NULL; }
-    char filename[PATH_MAX];
-    strcpy(filename, base);
-    if (slash) slash[slash==name ? 1 : 0]=0;
-    else strcpy(name, ".");
-    char *directory=realpath(name, NULL), *result=NULL;
-    if (!directory) return NULL;
-    if (asprintf(&result, "%s/%s", directory, filename) < 0) result=NULL;
-    free(directory);
-    return result;
-}
-
 // Physical addresses use fixed-size file windows; files themselves grow lazily.
 static off_t physical_offset(struct storage *storage, uint64_t ref)
 {
@@ -149,14 +130,12 @@ static int read_physical(struct storage *storage, uint64_t ref, void *buffer, si
 // Discover crash-created parts independently of the committed bitmap's extent.
 static int discover_parts(struct storage *storage)
 {
-    char directory[PATH_MAX];
-    strcpy(directory, storage->path);
-    char *base=strrchr(directory, '/')+1;
     char prefix[PATH_MAX];
-    snprintf(prefix, sizeof(prefix), "%s.", base);
-    *base=0;
-    DIR *dir=opendir(directory);
-    if (!dir) return -errno;
+    snprintf(prefix, sizeof(prefix), "%s.", storage->path);
+    int fd=openat(storage->directory_fd, ".", O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    if (fd < 0) return -errno;
+    DIR *dir=fdopendir(fd);
+    if (!dir) { int error=-errno; close(fd); return error; }
     int result=0;
     struct dirent *entry;
     while ((entry=readdir(dir)))
@@ -170,7 +149,7 @@ static int discover_parts(struct storage *storage)
         if (index >= MAX_PARTS) { result=-EFBIG; break; }
         char suffix[32];
         snprintf(suffix, sizeof(suffix), ".%lu", index);
-        int fd=open_suffix(storage->path, suffix, O_RDWR);
+        int fd=open_suffix(storage->directory_fd, storage->path, suffix, O_RDWR);
         if (fd < 0) { result=fd; break; }
         struct stat st;
         if (fstat(fd, &st)) { result=-errno; close(fd); break; }
@@ -214,15 +193,15 @@ static struct storage_snapshot *snapshot_named(struct storage *storage, const ch
 // Keep metadata in an owned directory whose parent entry is durable before publication.
 static int open_snapshots(struct storage *storage, int create)
 {
-    if (storage->snapshots_fd >= 0) return create ? sync_directory(storage->path) : 0;
+    if (storage->snapshots_fd >= 0) return create ? sync_directory(storage->directory_fd, storage->path) : 0;
     char path[PATH_MAX];
     int result=storage_name(path, storage->path, ".snapshots");
     if (result) return result;
-    if (create && mkdir(path, 0700) && errno!=EEXIST) return -errno;
-    int fd=open(path, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (create && mkdirat(storage->directory_fd, path, 0700) && errno!=EEXIST) return -errno;
+    int fd=openat(storage->directory_fd, path, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if (fd < 0) return -errno;
     storage->snapshots_fd=fd;
-    return create ? sync_directory(path) : 0;
+    return create ? sync_directory(storage->directory_fd, path) : 0;
 }
 
 // Decode one saved mapping or history-only node without following metadata symlinks.
@@ -382,7 +361,7 @@ static int allocate_blocks(struct storage *storage, size_t maximum, uint64_t *re
         {
             char suffix[32];
             snprintf(suffix, sizeof(suffix), ".%zu", index);
-            int fd=open_suffix(storage->path, suffix, O_RDWR|O_CREAT|O_EXCL);
+            int fd=open_suffix(storage->directory_fd, storage->path, suffix, O_RDWR|O_CREAT|O_EXCL);
             if (fd < 0) { result=fd; goto out; }
             storage->parts[index].fd=fd;
             if (storage->part_count <= index) storage->part_count=index+1;
@@ -709,7 +688,7 @@ static int sync_locked(struct storage *storage)
         if (storage->parts[i].dirty && fsync(storage->parts[i].fd)) return -errno;
     if (storage->directory_dirty)
     {
-        int result=sync_directory(storage->path);
+        int result=sync_directory(storage->directory_fd, storage->path);
         if (result) return result;
     }
     if (storage->changed)
@@ -719,14 +698,14 @@ static int sync_locked(struct storage *storage)
         struct snapshot snapshot={.size=storage->size, .part_size=storage->part_size, .slots=slots,
             .root_count=storage->root_count, .root=storage->root, .bits=storage->map.used,
             .sequence=storage->sequence+1, .parent=storage->parent};
-        int result=storage->force_snapshot ? -E2BIG : journal_append(storage->path, &snapshot,
+        int result=storage->force_snapshot ? -E2BIG : journal_append(storage->directory_fd, storage->path, &snapshot,
             storage->map.checkpoint, (storage->checkpoint_slots+63)/64, storage->checkpoint_roots,
             storage->dirty_leaves, storage->dirty_count, storage->map.dirty_words, storage->map.dirty_count,
             &storage->journal_fd, &storage->log_length);
         if (result==-E2BIG)
         {
-            result=snapshot_replace(storage->path, ".work", &snapshot, NULL);
-            if (!result) result=journal_reset(storage->path, &storage->journal_fd);
+            result=snapshot_replace(storage->directory_fd, storage->path, ".work", &snapshot, NULL);
+            if (!result) result=journal_reset(storage->directory_fd, storage->path, &storage->journal_fd);
             if (!result) storage->log_length=0;
         }
         if (result)
@@ -765,9 +744,9 @@ static int discard_checkpoints(struct storage *storage)
         char name[PATH_MAX];
         int result=storage_name(name, path, suffixes[i]);
         if (result) return result;
-        if (unlink(name) && errno!=ENOENT) return -errno;
+        if (unlinkat(storage->directory_fd, name, 0) && errno!=ENOENT) return -errno;
     }
-    return sync_directory(path);
+    return sync_directory(storage->directory_fd, path);
 }
 
 // Serialize synchronization against writers while retaining parallel ordinary I/O.
@@ -1062,7 +1041,7 @@ static int publish_current(struct storage *storage)
         struct snapshot snapshot={.size=storage->size, .part_size=storage->part_size, .slots=slots,
             .root_count=storage->root_count, .root=storage->root, .bits=storage->map.used,
             .sequence=storage->sequence, .parent=storage->parent};
-        result=snapshot_publish(storage->path, &snapshot);
+        result=snapshot_publish(storage->directory_fd, storage->path, &snapshot);
         if (!result) storage->committed_sequence=storage->sequence;
     }
     if (!result) result=discard_checkpoints(storage);
@@ -1093,7 +1072,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
 {
     struct storage *storage=calloc(1, sizeof(*storage));
     if (!storage) return -ENOMEM;
-    storage->lock_fd=-1; storage->journal_fd=-1; storage->snapshots_fd=-1;
+    storage->directory_fd=-1; storage->lock_fd=-1; storage->journal_fd=-1; storage->snapshots_fd=-1;
     for (size_t i=0; i < MAX_PARTS; i++) storage->parts[i].fd=-1;
     pthread_mutex_init(&storage->allocation, NULL);
     pthread_mutex_init(&storage->gate, NULL);
@@ -1101,21 +1080,21 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     for (size_t i=0; i < LOCK_COUNT; i++) pthread_mutex_init(&storage->stripes[i], NULL);
     int error=0;
     struct snapshot snapshot={0};
-    storage->path=absolute_path(path);
-    if (!storage->path) { error=-errno; goto failed; }
-    storage->lock_fd=lock_storage(storage->path);
+    error=storage_path(path, &storage->directory_fd, &storage->path);
+    if (error) goto failed;
+    storage->lock_fd=lock_storage(storage->directory_fd, storage->path);
     if (storage->lock_fd < 0) { error=storage->lock_fd; goto failed; }
-    int fd=open_suffix(storage->path, "", O_RDONLY);
+    int fd=open_suffix(storage->directory_fd, storage->path, "", O_RDONLY);
     if (fd >= 0)
     {
         error=snapshot_load(fd, &snapshot);
         close(fd);
         if (error==-EPROTONOSUPPORT)
         {
-            error=migration_convert(storage->path);
+            error=migration_convert(storage->directory_fd, storage->path);
             if (!error)
             {
-                fd=open_suffix(storage->path, "", O_RDONLY);
+                fd=open_suffix(storage->directory_fd, storage->path, "", O_RDONLY);
                 if (fd < 0) error=fd;
                 else { error=snapshot_load(fd, &snapshot); close(fd); }
             }
@@ -1143,17 +1122,17 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
         const char *pending_suffixes[]={".work", ".log", ".migrate", ".snapshots"};
         for (size_t i=0; i < sizeof(pending_suffixes)/sizeof(*pending_suffixes); i++)
         {
-            int pending=open_suffix(storage->path, pending_suffixes[i], O_RDONLY);
+            int pending=open_suffix(storage->directory_fd, storage->path, pending_suffixes[i], O_RDONLY);
             if (pending >= 0) { close(pending); error=-EEXIST; goto failed; }
             if (pending!=-ENOENT) { error=pending; goto failed; }
         }
-        error=snapshot_publish(storage->path, &snapshot);
+        error=snapshot_publish(storage->directory_fd, storage->path, &snapshot);
         if (error) goto failed;
         increase=0;
     }
     else { error=fd; goto failed; }
     storage->committed_sequence=snapshot.sequence;
-    fd=open_suffix(storage->path, ".work", O_RDONLY);
+    fd=open_suffix(storage->directory_fd, storage->path, ".work", O_RDONLY);
     if (fd >= 0)
     {
         struct snapshot saved={0};
@@ -1170,7 +1149,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     }
     else if (fd!=-ENOENT) { error=fd; goto failed; }
     int replayed=0;
-    error=journal_replay(storage->path, &snapshot, &replayed);
+    error=journal_replay(storage->directory_fd, storage->path, &snapshot, &replayed);
     if (error) goto failed;
     storage->part_size=snapshot.part_size;
     storage->capacity=storage->part_size/4096;
@@ -1222,7 +1201,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     // Commit recovery/restore before an automatic point starts a new metadata journal.
     if (storage->sequence!=storage->committed_sequence)
     {
-        error=snapshot_publish(storage->path, &snapshot);
+        error=snapshot_publish(storage->directory_fd, storage->path, &snapshot);
         if (error) goto failed;
         storage->committed_sequence=storage->sequence;
     }
@@ -1272,10 +1251,11 @@ void storage_close(struct storage *storage)
         if (!storage->finished) close(storage->lock_fd);
         else
         {
-            int error=unlock_storage(storage->path, storage->lock_fd);
+            int error=unlock_storage(storage->directory_fd, storage->path, storage->lock_fd);
             if (error) fprintf(stderr, "Cannot remove storage lock: %s\n", strerror(-error));
         }
     }
+    if (storage->directory_fd >= 0) close(storage->directory_fd);
     free(storage->path);
     pthread_mutex_destroy(&storage->allocation);
     pthread_mutex_destroy(&storage->gate);

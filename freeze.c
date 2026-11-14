@@ -206,18 +206,18 @@ static int start_freeze(struct freeze_target *targets, size_t count, struct file
 }
 
 // Match by backing inode/device; names alone are insufficient after renames or binds.
-int filesystem_freeze(const char *disk_path, struct filesystem_freeze **result)
+int filesystem_freeze(int directory, const char *disk_path, struct filesystem_freeze **result)
 {
     *result=NULL;
     struct stat backing;
-    if (stat(disk_path, &backing)) return -errno;
-    DIR *directory=opendir("/sys/block");
-    if (!directory) return -errno;
+    if (fstatat(directory, disk_path, &backing, 0)) return -errno;
+    DIR *loops=opendir("/sys/block");
+    if (!loops) return -errno;
     struct freeze_target *targets=NULL;
     size_t count=0;
     struct dirent *entry;
     int error=0;
-    for (errno=0; (entry=readdir(directory)); errno=0)
+    for (errno=0; (entry=readdir(loops)); errno=0)
     {
         if (strncmp(entry->d_name, "loop", 4) || !entry->d_name[4]) continue;
         if (strspn(entry->d_name+4, "0123456789")!=strlen(entry->d_name+4)) continue;
@@ -252,7 +252,7 @@ int filesystem_freeze(const char *disk_path, struct filesystem_freeze **result)
         targets[count++]=(struct freeze_target){mount, loop, backing.st_dev, backing.st_ino};
     }
     if (!entry && errno) error=-errno;
-    closedir(directory);
+    closedir(loops);
     if (!error && count) error=start_freeze(targets, count, result);
     for (size_t i=0; i < count; i++) { close(targets[i].directory); close(targets[i].loop); }
     free(targets);

@@ -80,6 +80,12 @@ allocated space for reuse. Crash-recovery files remain until a successful next m
 Keep the main metadata file, all numbered parts and the snapshot directory together.
 Snapshots share backing blocks and are not independent backups.
 
+Mounted stores retain directory handles instead of relying on their original absolute
+paths. Writes, snapshot creation and clean unmount therefore keep working across
+`pivot_root`, including when the store supplies a live system's writable layer.
+Automatic filesystem freezing still requires accessible `/proc`, `/sys` and `/dev`
+in the daemon's current root and an unchanged mount/device topology during creation.
+
 ## Sessions and history
 
 There is one current state and a history of immutable snapshots. A normal mount
@@ -247,6 +253,13 @@ python3 tests/snapshots.py /absolute/path/to/dynfilefs
 ```
 
 Use `--skip-loop` to run only the raw-image and catalog checks.
+
+Test directory renames and real root transitions with a C compiler, unshare and
+both filesystem toolsets (the test isolates its mounts and processes):
+
+```sh
+python3 tests/pivot-root.py /absolute/path/to/dynfilefs
+```
 
 [Tests and benchmarks](benchmarks/README.md) · [Stable releases](https://github.com/Tomas-M/dynfilefs/releases)
 

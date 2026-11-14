@@ -16,19 +16,20 @@ struct snapshot
 
 int read_at(int fd, void *buffer, size_t size, off_t offset);
 int write_at(int fd, const void *buffer, size_t size, off_t offset);
+int storage_path(const char *path, int *directory, char **name);
 int storage_name(char *name, const char *path, const char *suffix);
-int open_suffix(const char *path, const char *suffix, int flags);
-int lock_storage(const char *path);
-int unlock_storage(const char *path, int fd);
-int sync_directory(const char *path);
+int open_suffix(int directory, const char *path, const char *suffix, int flags);
+int lock_storage(int directory, const char *path);
+int unlock_storage(int directory, const char *path, int fd);
+int sync_directory(int directory, const char *path);
 uint64_t metadata_checksum(const unsigned char *bytes, size_t size);
 int snapshot_length(const struct snapshot *snapshot, size_t *length);
 int snapshot_validate(const struct snapshot *snapshot);
 int snapshot_load(int fd, struct snapshot *snapshot);
 int snapshot_write(int fd, const struct snapshot *snapshot);
-int snapshot_replace(const char *path, const char *suffix, const struct snapshot *snapshot, int *published);
-int snapshot_publish(const char *path, const struct snapshot *snapshot);
+int snapshot_replace(int directory, const char *path, const char *suffix, const struct snapshot *snapshot, int *published);
+int snapshot_publish(int directory, const char *path, const struct snapshot *snapshot);
 void snapshot_free(struct snapshot *snapshot);
-int migration_convert(const char *path);
+int migration_convert(int directory, const char *path);
 
 #endif

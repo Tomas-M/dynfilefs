@@ -34,10 +34,10 @@ static int legacy_header(int fd, uint64_t *split, uint64_t *size)
 }
 
 // Own the possible output names durably before creating them, so retries are safe.
-static int prepare_conversion(const char *path, const char *header, int first, int count)
+static int prepare_conversion(int directory, const char *path, const char *header, int first, int count)
 {
     char name[PATH_MAX], marker[PATH_MAX], saved[DYN_BLOCK_SIZE];
-    int fd=open_suffix(path, ".migrate", O_RDONLY), result=0, retry=fd>=0;
+    int fd=open_suffix(directory, path, ".migrate", O_RDONLY), result=0, retry=fd>=0;
     if (retry)
     {
         struct stat st;
@@ -57,30 +57,30 @@ static int prepare_conversion(const char *path, const char *header, int first, i
         if (result) return result;
         if (retry)
         {
-            if (unlink(name) && errno!=ENOENT) return -errno;
+            if (unlinkat(directory, name, 0) && errno!=ENOENT) return -errno;
         }
         else
         {
             struct stat st;
-            if (!lstat(name, &st)) return -EEXIST;
+            if (!fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW)) return -EEXIST;
             if (errno!=ENOENT) return -errno;
         }
     }
-    if (retry) return sync_directory(path);
-    fd=open_suffix(path, ".next", O_RDWR|O_CREAT|O_TRUNC);
+    if (retry) return sync_directory(directory, path);
+    fd=open_suffix(directory, path, ".next", O_RDWR|O_CREAT|O_TRUNC);
     if (fd < 0) return fd;
     result=write_at(fd, header, DYN_BLOCK_SIZE, 0);
     if (!result && fsync(fd)) result=-errno;
     if (close(fd) && !result) result=-errno;
     if (!result) result=storage_name(name, path, ".next");
     if (!result) result=storage_name(marker, path, ".migrate");
-    if (!result && rename(name, marker)) result=-errno;
-    if (!result) result=sync_directory(path);
+    if (!result && renameat(directory, name, directory, marker)) result=-errno;
+    if (!result) result=sync_directory(directory, path);
     return result;
 }
 
 // The caller holds the stable storage lock through conversion and the following mount.
-int migration_convert(const char *path)
+int migration_convert(int directory, const char *path)
 {
     struct snapshot snapshot={0};
     struct block_map map={0};
@@ -91,11 +91,11 @@ int migration_convert(const char *path)
     const char *companions[]={".work", ".log", ".snapshots"};
     for (size_t i=0; i < sizeof(companions)/sizeof(*companions); i++)
     {
-        int fd=open_suffix(path, companions[i], O_RDONLY);
+        int fd=open_suffix(directory, path, companions[i], O_RDONLY);
         if (fd >= 0) { close(fd); result=-EEXIST; goto done; }
         if (fd!=-ENOENT) { result=fd; goto done; }
     }
-    source=open_suffix(path, "", O_RDONLY);
+    source=open_suffix(directory, path, "", O_RDONLY);
     if (source < 0) { result=source; goto done; }
     result=legacy_header(source, &split, &size);
     if (!result) result=read_at(source, header, sizeof(header), 0);
@@ -129,7 +129,7 @@ int migration_convert(const char *path)
     {
         char suffix[32];
         snprintf(suffix, sizeof(suffix), ".%d", part);
-        source=open_suffix(path, suffix, O_RDONLY);
+        source=open_suffix(directory, path, suffix, O_RDONLY);
         if (source < 0) { result=source; goto done; }
         uint64_t stored_split, stored_size;
         result=legacy_header(source, &stored_split, &stored_size);
@@ -145,7 +145,7 @@ int migration_convert(const char *path)
     }
     uint64_t outputs=(roots-1)/part_slots+1;
     if (outputs > (uint64_t)(DYN_MAX_PARTS-parts)) outputs=DYN_MAX_PARTS-parts;
-    result=prepare_conversion(path, header, parts, (int)outputs);
+    result=prepare_conversion(directory, path, header, parts, (int)outputs);
     if (result) goto done;
     result=map_init(&map, NULL, (uint64_t)(parts-1)*part_slots+(lengths[parts-1]+4095)/4096);
     if (result) goto done;
@@ -156,7 +156,7 @@ int migration_convert(const char *path)
     {
         char suffix[32];
         snprintf(suffix, sizeof(suffix), ".%d", part);
-        source=open_suffix(path, suffix, O_RDONLY);
+        source=open_suffix(directory, path, suffix, O_RDONLY);
         if (source < 0) { result=source; goto done; }
         uint64_t bytes=size-(uint64_t)part*split;
         if (bytes > split) bytes=split;
@@ -192,7 +192,7 @@ int migration_convert(const char *path)
                 if (parts+created >= DYN_MAX_PARTS || (uint64_t)(parts+created+1) > UINT64_MAX/part_slots)
                 { result=-EOVERFLOW; goto done; }
                 snprintf(suffix, sizeof(suffix), ".%d", parts+created);
-                output=open_suffix(path, suffix, O_RDWR|O_CREAT|O_EXCL);
+                output=open_suffix(directory, path, suffix, O_RDWR|O_CREAT|O_EXCL);
                 if (output < 0) { result=output; goto done; }
                 created++;
                 output_position=0;
@@ -209,13 +209,13 @@ int migration_convert(const char *path)
         close(source); source=-1;
     }
     if (output >= 0 && fsync(output)) { result=-errno; goto done; }
-    result=sync_directory(path);
+    result=sync_directory(directory, path);
     if (result) goto done;
     snapshot.slots=map.slots;
     snapshot.bits=map.used;
     // A post-rename error must never delete parts referenced by the published root.
     publishing=1;
-    result=snapshot_publish(path, &snapshot);
+    result=snapshot_publish(directory, path, &snapshot);
 
 done:
     if (source >= 0) close(source);
@@ -225,7 +225,7 @@ done:
         {
             char suffix[32], name[PATH_MAX];
             snprintf(suffix, sizeof(suffix), ".%d", parts+part);
-            if (!storage_name(name, path, suffix)) unlink(name);
+            if (!storage_name(name, path, suffix)) unlinkat(directory, name, 0);
         }
     snapshot.bits=NULL;
     snapshot_free(&snapshot);

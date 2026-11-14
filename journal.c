@@ -16,7 +16,7 @@ struct journal_header
 };
 
 // Append absolute metadata changes only after their referenced data has been synced.
-int journal_append(const char *path, const struct snapshot *snapshot,
+int journal_append(int directory, const char *path, const struct snapshot *snapshot,
                    const uint64_t *previous_bits, size_t previous_words, size_t previous_root_count,
                    const size_t *dirty_roots, size_t dirty_root_count,
                    const size_t *dirty_words, size_t dirty_word_count, int *fd, uint64_t *length)
@@ -65,7 +65,7 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     header->checksum=htole64(metadata_checksum(bytes, size));
     if (*fd < 0)
     {
-        int opened=open_suffix(path, ".log", O_WRONLY|O_CREAT);
+        int opened=open_suffix(directory, path, ".log", O_WRONLY|O_CREAT);
         if (opened < 0) { free(bytes); return opened; }
         *fd=opened;
     }
@@ -73,7 +73,7 @@ int journal_append(const char *path, const struct snapshot *snapshot,
     free(bytes);
     if (!result && ftruncate(*fd, (off_t)(*length+size))) result=-errno;
     if (!result && fsync(*fd)) result=-errno;
-    if (!result && !*length) result=sync_directory(path);
+    if (!result && !*length) result=sync_directory(directory, path);
     if (!result) *length+=size;
     return result;
 }
@@ -145,10 +145,10 @@ static int apply_record(unsigned char *bytes, size_t length, struct snapshot *sn
 }
 
 // Recover complete consecutive checkpoints and ignore only a torn final suffix.
-int journal_replay(const char *path, struct snapshot *snapshot, int *replayed)
+int journal_replay(int directory, const char *path, struct snapshot *snapshot, int *replayed)
 {
     *replayed=0;
-    int fd=open_suffix(path, ".log", O_RDONLY);
+    int fd=open_suffix(directory, path, ".log", O_RDONLY);
     if (fd==-ENOENT) return 0;
     if (fd < 0) return fd;
     struct stat info;
@@ -188,7 +188,7 @@ int journal_replay(const char *path, struct snapshot *snapshot, int *replayed)
 }
 
 // Remove obsolete records only after their replacement is durable.
-int journal_reset(const char *path, int *fd)
+int journal_reset(int directory, const char *path, int *fd)
 {
     // Invalidate before close, and never keep a descriptor to an unlinked journal.
     if (*fd >= 0)
@@ -199,7 +199,7 @@ int journal_reset(const char *path, int *fd)
     }
     char name[PATH_MAX];
     int result=storage_name(name, path, ".log");
-    if (!result && unlink(name) && errno!=ENOENT) result=-errno;
-    if (!result) result=sync_directory(path);
+    if (!result && unlinkat(directory, name, 0) && errno!=ENOENT) result=-errno;
+    if (!result) result=sync_directory(directory, path);
     return result;
 }

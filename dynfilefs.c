@@ -20,6 +20,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "storage.h"
+#include "format.h"
 #include "freeze.h"
 #include "report.h"
 
@@ -30,6 +31,7 @@ static const char *snapshots_path="/snapshots";
 static const char *stats_path="/stats";
 static const char *history_path="/snapshots.json";
 static char virtual_path[PATH_MAX];
+static int virtual_directory=-1;
 static pthread_mutex_t snapshot_commands=PTHREAD_MUTEX_INITIALIZER;
 struct name_list { char *bytes; size_t length; };
 
@@ -242,7 +244,7 @@ static int dynfilefs_write(const char *path, const char *buffer, size_t size, of
         if (create)
         {
             struct filesystem_freeze *state=NULL;
-            result=filesystem_freeze(virtual_path, &state);
+            result=filesystem_freeze(virtual_directory, virtual_path, &state);
             if (!result)
             {
                 result=storage_snapshot_create(disk, command+7);
@@ -482,13 +484,19 @@ int main(int argc, char **argv)
     if (restore && !*restore) { fprintf(stderr, "A named snapshot is required for --restore.\n"); return 1; }
     char *directory=realpath(mount, NULL);
     if (!directory) { fprintf(stderr, "Cannot resolve mount directory: %s\n", strerror(errno)); return 1; }
-    int length=snprintf(virtual_path, sizeof(virtual_path), "%s%s", directory, disk_path);
+    // Pin the parent, not the FUSE root itself: an owned mount handle would prevent unmount.
+    char *name=NULL;
+    int error=storage_path(directory, &virtual_directory, &name);
     free(directory);
-    if (length >= (int)sizeof(virtual_path)) { fprintf(stderr, "Mount directory is too long.\n"); return 1; }
-    int error=storage_open(&disk, file, size, increase, split, restore);
+    if (error) { fprintf(stderr, "Cannot open mount parent: %s\n", strerror(-error)); return 1; }
+    int length=snprintf(virtual_path, sizeof(virtual_path), "%s%s", name, disk_path);
+    free(name);
+    if (length >= (int)sizeof(virtual_path)) { close(virtual_directory); fprintf(stderr, "Mount directory is too long.\n"); return 1; }
+    error=storage_open(&disk, file, size, increase, split, restore);
     if (error)
     {
         fprintf(stderr, "Cannot open storage: %s\n", strerror(-error));
+        close(virtual_directory);
         return 1;
     }
 
@@ -503,6 +511,7 @@ int main(int argc, char **argv)
         if (finish_error) fprintf(stderr, "Cannot finish storage: %s\n", strerror(-finish_error));
         result=!!finish_error;
     }
+    close(virtual_directory);
     storage_close(disk);
     return result;
 }

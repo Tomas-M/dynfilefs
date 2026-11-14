@@ -29,8 +29,8 @@ ssize_t __wrap_pwrite(int fd, const void *buffer, size_t size, off_t offset);
 ssize_t __wrap_pwrite64(int fd, const void *buffer, size_t size, off_t offset);
 int __real_fsync(int fd);
 int __wrap_fsync(int fd);
-int __real_rename(const char *source, const char *target);
-int __wrap_rename(const char *source, const char *target);
+int __real_renameat(int source_directory, const char *source, int target_directory, const char *target);
+int __wrap_renameat(int source_directory, const char *source, int target_directory, const char *target);
 
 // Target metadata-log faults without failing the preceding data/index-page flushes.
 static int log_descriptor(int fd)
@@ -95,10 +95,10 @@ int __wrap_fsync(int fd)
 }
 
 // Fail the final metadata publication after its candidate has been written.
-int __wrap_rename(const char *source, const char *target)
+int __wrap_renameat(int source_directory, const char *source, int target_directory, const char *target)
 {
     if (fail_rename) { errno=EIO; return -1; }
-    int result=__real_rename(source, target);
+    int result=__real_renameat(source_directory, source, target_directory, target);
     if (!result && fail_after_rename==1) fail_after_rename=2;
     return result;
 }
@@ -635,11 +635,11 @@ static void check_fragmented_runs(const char *path)
     bits[15]=UINT64_C(1)<<63;
     entries[127]=htole64(1024);
     struct snapshot snapshot={.size=4*MIB, .part_size=4*MIB, .slots=1024, .root_count=2, .root=root, .bits=bits};
-    int fd=open_suffix(path, ".0", O_RDWR|O_CREAT|O_EXCL);
+    int fd=open_suffix(AT_FDCWD, path, ".0", O_RDWR|O_CREAT|O_EXCL);
     assert(fd >= 0 && !ftruncate(fd, 4*MIB));
     assert(!write_at(fd, entries, sizeof(entries), 0) && !fsync(fd));
     close(fd);
-    assert(!snapshot_publish(path, &snapshot));
+    assert(!snapshot_publish(AT_FDCWD, path, &snapshot));
     struct storage *storage=NULL;
     assert(!storage_open(&storage, path, 0, 0, 0, NULL));
     unsigned char *input=malloc(MIB), *output=malloc(MIB);

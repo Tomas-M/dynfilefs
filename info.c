@@ -16,7 +16,7 @@
 // A shared lock on an existing lock file never creates or publishes storage state.
 static int inspect_lock(const char *path, int *lock)
 {
-    *lock=open_suffix(path, ".lock", O_RDONLY);
+    *lock=open_suffix(AT_FDCWD, path, ".lock", O_RDONLY);
     if (*lock==-ENOENT) { *lock=-1; return 0; }
     if (*lock < 0) return *lock;
     if (flock(*lock, LOCK_SH|LOCK_NB)) return errno==EWOULDBLOCK ? -EBUSY : -errno;
@@ -107,7 +107,7 @@ static int reusable_parts(const char *path, const struct snapshot *current, cons
         if (errno || index >= DYN_MAX_PARTS) { result=-EFBIG; break; }
         char suffix[32];
         snprintf(suffix, sizeof(suffix), ".%lu", index);
-        int fd=open_suffix(path, suffix, O_RDONLY);
+        int fd=open_suffix(AT_FDCWD, path, suffix, O_RDONLY);
         if (fd < 0) { result=fd; break; }
         struct stat st;
         result=fstat(fd, &st) ? -errno : 0;
@@ -154,7 +154,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
     struct snapshot_record *records=NULL;
     size_t count=0, capacity=0, words=0;
     uint64_t *bits=NULL;
-    int fd=open_suffix(path, "", O_RDONLY);
+    int fd=open_suffix(AT_FDCWD, path, "", O_RDONLY);
     if (fd < 0) return fd;
     int result=snapshot_load(fd, &current);
     if (result==-EPROTONOSUPPORT)
@@ -167,7 +167,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
     close(fd);
     if (result) goto out;
     if (current.id || !current.size) { result=-EIO; goto out; }
-    fd=open_suffix(path, ".work", O_RDONLY);
+    fd=open_suffix(AT_FDCWD, path, ".work", O_RDONLY);
     if (fd >= 0)
     {
         result=snapshot_load(fd, &saved);
@@ -182,7 +182,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
     }
     else if (fd!=-ENOENT) result=fd;
     int replayed;
-    if (!result) result=journal_replay(path, &current, &replayed);
+    if (!result) result=journal_replay(AT_FDCWD, path, &current, &replayed);
     if (!result) result=merge_pins(&bits, &words, &current);
     if (result) goto out;
     char name[PATH_MAX];

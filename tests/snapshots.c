@@ -318,6 +318,14 @@ static void check_faults(const char *path)
     directory_sync_budget=1;
     assert(storage_snapshot_delete(storage, "B")==-EIO);
     directory_sync_budget=-1;
+    char *unavailable=NULL;
+    assert(storage_snapshot_report(storage, 1, &unavailable)>0 && strstr(unavailable, "\"reclaimableBytes\":null"));
+    free(unavailable);
+    fail_snapshot_rename=1;
+    assert(storage_snapshot_delete(storage, "A")==-EIO);
+    fail_snapshot_rename=0;
+    assert(storage_snapshot_report(storage, 1, &unavailable)>0 && strstr(unavailable, "\"reclaimableBytes\":null"));
+    free(unavailable);
     write_payload(storage, 'D'); assert(!storage_sync(storage));
     write_payload(storage, 'E'); assert(!storage_sync(storage));
     storage_close(storage);
@@ -483,6 +491,62 @@ static void check_mount_protection(const char *path)
     puts("PASS: exact mount protection survives recovery/finish pruning and expires only at close");
 }
 
+// Read the reported allocator gain independently of internal ownership caches.
+static uint64_t reclaimable(struct storage *storage, const char *name)
+{
+    char *report=NULL, marker[DYN_NAME_MAX+12];
+    assert(storage_snapshot_report(storage, 1, &report)>0);
+    assert(snprintf(marker, sizeof(marker), "\"name\":\"%s\"", name) < (int)sizeof(marker));
+    char *record=strstr(report, marker);
+    assert(record);
+    char *value=strstr(record, "\"reclaimableBytes\":");
+    assert(value && value < strchr(record, '}'));
+    value+=strlen("\"reclaimableBytes\":");
+    assert(*value >= '0' && *value <= '9');
+    uint64_t bytes=strtoull(value, NULL, 10);
+    free(report); return bytes;
+}
+
+// Shared roots, working writes, crash checkpoints and descriptor pins all exclude false savings.
+static void check_reclaimable(const char *path)
+{
+    struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
+    write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "A"));
+    assert(!reclaimable(storage, "A"));
+    assert(!storage_snapshot_create(storage, "shared"));
+    write_payload(storage, 'B'); assert(!storage_sync(storage));
+    assert(!reclaimable(storage, "A") && !reclaimable(storage, "shared"));
+    assert(!storage_snapshot_delete(storage, "shared"));
+    uint64_t gain=reclaimable(storage, "A");
+    assert(gain >= PAYLOAD_SIZE && !reclaimable(storage, "shared"));
+    struct storage_snapshot *view=NULL;
+    assert(!storage_snapshot_open(storage, "A", &view));
+    assert(storage_snapshot_delete(storage, "A")==-EBUSY && reclaimable(storage, "A")==gain);
+    storage_snapshot_close(storage, view);
+    struct storage_info before, after;
+    assert(!storage_get_info(storage, &before));
+    assert(!storage_snapshot_delete(storage, "A"));
+    assert(!storage_get_info(storage, &after) && after.reusable-before.reusable==gain);
+    assert(!reclaimable(storage, "A"));
+    assert(!storage_snapshot_create(storage, "B"));
+    write_payload(storage, 'C');
+    assert(!reclaimable(storage, "B"));
+    assert(!storage_sync(storage));
+    assert(reclaimable(storage, "B") >= PAYLOAD_SIZE);
+    assert(!storage_snapshot_create(storage, "pinned"));
+    int fd; off_t offset;
+    for (size_t i=0; i < PAYLOAD_SIZE; i+=4096)
+        assert(storage_read_extent(storage, 4096+i, 4096, &fd, &offset)==1);
+    write_payload(storage, 'D'); assert(!storage_sync(storage));
+    gain=reclaimable(storage, "pinned");
+    assert(gain < PAYLOAD_SIZE);
+    assert(!storage_get_info(storage, &before));
+    assert(!storage_snapshot_delete(storage, "pinned"));
+    assert(!storage_get_info(storage, &after) && after.reusable-before.reusable==gain);
+    finish_store(storage);
+    puts("PASS: reclaimableBytes matches deletion gains and excludes shared/current/checkpoint/deferred-read blocks");
+}
+
 // Every fixture lives in its own directory and remains inspectable on failure.
 int main(int argc, char **argv)
 {
@@ -499,5 +563,6 @@ int main(int argc, char **argv)
     assert(snprintf(path, sizeof(path), "%s/concurrent", directory) < (int)sizeof(path)); check_concurrent(path);
     assert(snprintf(path, sizeof(path), "%s/sparse", directory) < (int)sizeof(path)); check_sparse(path);
     assert(snprintf(path, sizeof(path), "%s/protection", directory) < (int)sizeof(path)); check_mount_protection(path);
+    assert(snprintf(path, sizeof(path), "%s/reclaimable", directory) < (int)sizeof(path)); check_reclaimable(path);
     return 0;
 }

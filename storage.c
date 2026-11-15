@@ -33,19 +33,23 @@ struct leaf_page
 };
 struct leaf { struct leaf_page *page; int dirty; };
 struct leaf_cache { struct leaf_page *first, *last; size_t count; };
+struct exclusive_word { size_t word; uint64_t bits; };
 struct storage_snapshot
 {
     char *name;
     uint64_t id, parent, created, size;
     size_t users;
     int protected;
+    struct exclusive_word *exclusive;
+    size_t exclusive_count;
+    uint64_t reclaimable;
     struct snapshot state;
     struct storage_snapshot *next;
 };
 struct storage
 {
     char *path;
-    int directory_fd, lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot;
+    int directory_fd, lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot, usage_valid;
     uint64_t size, part_size, capacity, sequence, committed_sequence, log_length, checkpoint_slots, parent, max_id;
     size_t root_count, part_count, dirty_count, tail_count, checkpoint_roots;
     size_t tails[MAX_PARTS];
@@ -56,7 +60,7 @@ struct storage
     struct part parts[MAX_PARTS];
     struct block_map map;
     struct storage_snapshot *snapshots;
-    pthread_mutex_t allocation, stripes[LOCK_COUNT], gate;
+    pthread_mutex_t allocation, stripes[LOCK_COUNT], gate, reporting;
     pthread_cond_t wake;
     size_t readers, waiting;
     int writer;
@@ -298,6 +302,7 @@ static int remaining_snapshot_bits(struct storage *storage, struct storage_snaps
         if (!result && saved.slots > storage->map.slots) result=-EIO;
         if (!result)
         {
+            if (entry->size!=saved.size) storage->usage_valid=0;
             entry->size=saved.size;
             for (size_t i=0; i < (saved.slots+63)/64; i++) bits[i]|=saved.bits[i];
         }
@@ -787,6 +792,7 @@ static int create_snapshot_locked(struct storage *storage, const char *name)
     struct storage_snapshot **position=&storage->snapshots;
     while (*position) position=&(*position)->next;
     *position=entry; storage->max_id=entry->id;
+    storage->usage_valid=0;
     for (size_t i=0; i < storage->map.words; i++) storage->map.snapshots[i]|=storage->map.used[i];
     if (result) return result;
     storage->parent=entry->id;
@@ -812,6 +818,7 @@ static int delete_snapshot_locked(struct storage *storage, struct storage_snapsh
     if (!result)
     {
         entry->size=0;
+        storage->usage_valid=0;
         map_set_snapshots(&storage->map, bits);
     }
     free(bits);
@@ -929,19 +936,94 @@ int storage_snapshot_list(struct storage *storage, char **result)
     return (int)length;
 }
 
-// Export ancestry independently of open image handles, including deleted structural nodes.
+// Discard optional ownership caches without changing any saved data or allocation pins.
+static void clear_snapshot_usage(struct storage *storage)
+{
+    for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next)
+    {
+        free(entry->exclusive); entry->exclusive=NULL; entry->exclusive_count=0;
+    }
+    storage->usage_valid=0;
+}
+
+// Cache only words owned by exactly one saved point; data files are never scanned.
+static int cache_snapshot_usage(struct storage *storage)
+{
+    clear_snapshot_usage(storage);
+    pthread_mutex_lock(&storage->allocation);
+    size_t words=storage->map.words;
+    pthread_mutex_unlock(&storage->allocation);
+    uint64_t *once=calloc(words ? words : 1, sizeof(*once)), *many=calloc(words ? words : 1, sizeof(*many));
+    int error=once && many ? 0 : -ENOMEM;
+    for (struct storage_snapshot *entry=storage->snapshots; !error && entry; entry=entry->next)
+    {
+        if (!entry->size) continue;
+        struct snapshot saved={0};
+        error=load_snapshot(storage, entry->id, &saved);
+        size_t length=(size_t)((saved.slots+63)/64);
+        if (!error && (saved.size!=entry->size || length > words)) error=-EIO;
+        for (size_t i=0; !error && i < length; i++)
+        {
+            many[i]|=once[i]&saved.bits[i];
+            once[i]=(once[i]^saved.bits[i])&~many[i];
+        }
+        snapshot_free(&saved);
+    }
+    pthread_mutex_lock(&storage->allocation);
+    for (size_t i=0; !error && i < words; i++)
+        if ((once[i]|many[i])!=storage->map.snapshots[i]) error=-EIO;
+    pthread_mutex_unlock(&storage->allocation);
+    for (struct storage_snapshot *entry=storage->snapshots; !error && entry; entry=entry->next)
+    {
+        if (!entry->size) continue;
+        struct snapshot saved={0};
+        error=load_snapshot(storage, entry->id, &saved);
+        size_t length=(size_t)((saved.slots+63)/64), count=0;
+        if (!error && (saved.size!=entry->size || length > words)) error=-EIO;
+        for (size_t i=0; !error && i < length; i++) count+=!!(saved.bits[i]&once[i]);
+        if (!error && count)
+        {
+            entry->exclusive=calloc(count, sizeof(*entry->exclusive));
+            if (!entry->exclusive) error=-ENOMEM;
+            for (size_t i=0; !error && i < length; i++)
+                if (saved.bits[i]&once[i]) entry->exclusive[entry->exclusive_count++]=(struct exclusive_word){i, saved.bits[i]&once[i]};
+        }
+        snapshot_free(&saved);
+    }
+    free(once); free(many);
+    if (error) clear_snapshot_usage(storage);
+    storage->usage_valid=error ? -1 : 1;
+    return error;
+}
+
+// Export ancestry and allocator gains without reading saved metadata on ordinary polls.
 int storage_snapshot_report(struct storage *storage, int json, char **result)
 {
     enter_io(storage);
+    pthread_mutex_lock(&storage->reporting);
+    if (json && !storage->usage_valid) cache_snapshot_usage(storage);
     size_t count=0;
     for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next) count++;
     struct snapshot_record *records=calloc(count ? count : 1, sizeof(*records));
-    if (!records) { leave_io(storage); return -ENOMEM; }
+    if (!records) { pthread_mutex_unlock(&storage->reporting); leave_io(storage); return -ENOMEM; }
     size_t i=0;
+    pthread_mutex_lock(&storage->allocation);
     for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next)
-        records[i++]=(struct snapshot_record){entry->id, entry->parent, entry->created, entry->size, entry->name, entry->protected};
+    {
+        entry->reclaimable=0;
+        for (size_t j=0; j < entry->exclusive_count; j++)
+        {
+            size_t word=entry->exclusive[j].word;
+            uint64_t pins=storage->map.used[word]|storage->map.checkpoint[word]|storage->map.read_pins[word];
+            entry->reclaimable+=(uint64_t)__builtin_popcountll(entry->exclusive[j].bits&~pins)*4096;
+        }
+        records[i++]=(struct snapshot_record){entry->id, entry->parent, entry->created, entry->size, entry->name, entry->protected,
+            storage->usage_valid==1 ? &entry->reclaimable : NULL};
+    }
+    pthread_mutex_unlock(&storage->allocation);
     int length=snapshot_report(records, count, storage->parent, json, result);
     free(records);
+    pthread_mutex_unlock(&storage->reporting);
     leave_io(storage);
     return length;
 }
@@ -1088,6 +1170,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     for (size_t i=0; i < MAX_PARTS; i++) storage->parts[i].fd=-1;
     pthread_mutex_init(&storage->allocation, NULL);
     pthread_mutex_init(&storage->gate, NULL);
+    pthread_mutex_init(&storage->reporting, NULL);
     pthread_cond_init(&storage->wake, NULL);
     for (size_t i=0; i < LOCK_COUNT; i++) pthread_mutex_init(&storage->stripes[i], NULL);
     int error=0;
@@ -1258,6 +1341,7 @@ void storage_close(struct storage *storage)
         struct storage_snapshot *entry=storage->snapshots;
         storage->snapshots=entry->next;
         snapshot_free(&entry->state);
+        free(entry->exclusive);
         free(entry->name); free(entry);
     }
     for (size_t i=0; i < MAX_PARTS; i++) if (storage->parts[i].fd >= 0) close(storage->parts[i].fd);
@@ -1278,6 +1362,7 @@ void storage_close(struct storage *storage)
     free(storage->path);
     pthread_mutex_destroy(&storage->allocation);
     pthread_mutex_destroy(&storage->gate);
+    pthread_mutex_destroy(&storage->reporting);
     pthread_cond_destroy(&storage->wake);
     for (size_t i=0; i < LOCK_COUNT; i++) pthread_mutex_destroy(&storage->stripes[i]);
     free(storage);

@@ -274,6 +274,9 @@ def check_history(binary, root):
     before=disk_state(folder)
     output=subprocess.check_output([binary, '-f', str(storage), '--snapshots', '--json'], text=True)
     saved=json.loads(output)
+    assert all(point['reclaimableBytes'] is None for point in saved['snapshots'])
+    for point in history['snapshots']:
+        point['reclaimableBytes']=None
     assert saved==history
     tree=subprocess.check_output([binary, '-f', str(storage), '--snapshots'], text=True)
     assert all(point in tree for point in (name, 'B', 'C', 'D')) and b['id'] in tree

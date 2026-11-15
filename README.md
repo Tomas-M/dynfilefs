@@ -127,7 +127,7 @@ dynfilefs -f /var/lib/changes.dat --snapshots --json
 ```
 
 JSON contains `currentParent` and a `snapshots` array. Each node has `id`, `parent`,
-`name`, `created` (Unix seconds), `deleted`, `automatic` and `protected`. IDs are strings so they
+`name`, `created` (Unix seconds), `deleted`, `automatic`, `protected` and `reclaimableBytes`. IDs are strings so they
 remain exact in JavaScript. The tree marks the snapshot on which the current state
 is based; it does not mean that unsaved current writes equal that snapshot.
 
@@ -223,6 +223,21 @@ current state, live snapshots, the durable crash checkpoint or a pending
 descriptor-backed read. Live `stats` reflects unsynced allocations too; offline
 inspection requires an unmounted store and reports capacity available for its next
 mount. Legacy format-500 inspection reports zero until conversion.
+
+Live `snapshots.json` includes `reclaimableBytes` for each point: the additional
+allocator capacity made reusable by deleting that point alone. Shared blocks and
+blocks still needed by current writes, crash recovery or descriptor-backed reads
+are excluded. Protected or open points may still show a value, but cannot be
+deleted until their protection or open handles are released. Deleted points show
+zero. Offline inspection and unavailable measurements report `null`. A failed
+measurement is retried after the next point is created or deleted.
+
+The first JSON history read after mounting, creating or deleting a point reads
+snapshot metadata twice and caches sparse ownership masks. Later reads count
+those masks in RAM, without scanning data files or freezing the inner filesystem.
+The value can change as current writes or checkpoints release old blocks. It
+measures reusable data-part slots, not physical file shrinking or the separate
+metadata space recovered when a snapshot record becomes a small history record.
 
 The allocator uses existing free slots before extending a data part or creating a
 new one. Index pages and copy-on-write replacements consume the same reserve, so

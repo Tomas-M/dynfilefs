@@ -8,6 +8,7 @@ struct snapshot_record
     uint64_t id, parent, created, size;
     const char *name;
     int protected;
+    const uint64_t *reclaimable;
 };
 
 int snapshot_report(const struct snapshot_record *records, size_t count, uint64_t parent, int json, char **result);

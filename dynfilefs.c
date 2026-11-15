@@ -35,24 +35,19 @@ static int virtual_directory=-1;
 static pthread_mutex_t snapshot_commands=PTHREAD_MUTEX_INITIALIZER;
 struct name_list { char *bytes; size_t length; };
 
-// Recognize one immutable image without interpreting its international name.
-static int snapshot_name(const char *path, char *name)
-{
-    if (strncmp(path, "/snapshots/", 11)) return 0;
-    const char *file=path+11;
-    size_t length=strlen(file);
-    if (length <= 4 || length > NAME_MAX) return 0;
-    if (strchr(file, '/') || strcmp(file+length-4, ".dat")) return 0;
-    memcpy(name, file, length-4);
-    name[length-4]=0;
-    return 1;
-}
-
-// Exact IDs are shared by startup and live protection, never resolved through reusable names.
+// Exact IDs are shared by startup, protection and immutable image paths.
 static uint64_t parse_id(const char *text)
 {
     if (strlen(text)!=16 || strspn(text, "0123456789abcdef")!=16) return 0;
     return strtoull(text, NULL, 16);
+}
+
+// Image identities never change when their human-readable names are edited.
+static uint64_t snapshot_id(const char *path)
+{
+    if (strncmp(path, "/snapshots/", 11) || strlen(path+11)!=20 || strcmp(path+27, ".dat")) return 0;
+    char id[17]; memcpy(id, path+11, 16); id[16]=0;
+    return parse_id(id);
 }
 
 // Text handles keep one complete report while other requests change live state.
@@ -64,8 +59,9 @@ static int text_file(const char *path)
 // Share one JSON schema between offline inspection and mounted read-only reports.
 static int text_content(const char *path, char **bytes)
 {
-    if (!strcmp(path, snapshot_path)) return storage_snapshot_list(disk, bytes);
+    if (!strcmp(path, snapshot_path)) return storage_snapshot_list(disk, 0, bytes);
     if (!strcmp(path, history_path)) return storage_snapshot_report(disk, 1, bytes);
+    if (!strcmp(path, snapshots_path)) return storage_snapshot_list(disk, 1, bytes);
     struct storage_info info;
     int result=storage_get_info(disk, &info);
     return result ? result : storage_info_report(&info, 1, bytes);
@@ -87,7 +83,7 @@ static int open_text(const char *path, struct fuse_file_info *fi)
 static int dynfilefs_getattr(const char *path, struct stat *st, struct fuse_file_info *fi)
 {
     memset(st, 0, sizeof(*st));
-    char name[NAME_MAX+1];
+    uint64_t id=snapshot_id(path);
     if (!strcmp(path, "/") || !strcmp(path, snapshots_path))
     {
         st->st_mode=S_IFDIR|0755;
@@ -117,10 +113,10 @@ static int dynfilefs_getattr(const char *path, struct stat *st, struct fuse_file
         st->st_uid=getuid();
         st->st_gid=getgid();
     }
-    else if (snapshot_name(path, name))
+    else if (id)
     {
         uint64_t size;
-        int result=storage_snapshot_stat(disk, name, &size);
+        int result=storage_snapshot_stat(disk, id, &size);
         if (result) return result;
         st->st_mode=S_IFREG|0444;
         st->st_nlink=1;
@@ -134,10 +130,10 @@ static int dynfilefs_getattr(const char *path, struct stat *st, struct fuse_file
 static int dynfilefs_opendir(const char *path, struct fuse_file_info *fi)
 {
     if (!strcmp(path, "/")) return 0;
-    return strcmp(path, snapshots_path) ? -ENOENT : open_text(snapshot_path, fi);
+    return strcmp(path, snapshots_path) ? -ENOENT : open_text(snapshots_path, fi);
 }
 
-// Use resumable offsets for directories containing many snapshot names.
+// Use resumable offsets for directories containing many stable image IDs.
 static int dynfilefs_readdir(const char *path, void *buffer, fuse_fill_dir_t fill, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
     if (offset < 0) return -EINVAL;
@@ -174,12 +170,12 @@ static int dynfilefs_open(const char *path, struct fuse_file_info *fi)
         fi->direct_io=1;
         return (fi->flags&O_ACCMODE)==O_WRONLY ? 0 : open_text(path, fi);
     }
-    char name[NAME_MAX+1];
-    if (snapshot_name(path, name))
+    uint64_t id=snapshot_id(path);
+    if (id)
     {
         if ((fi->flags&O_ACCMODE)!=O_RDONLY || (fi->flags&O_TRUNC)) return -EROFS;
         struct storage_snapshot *view;
-        int result=storage_snapshot_open(disk, name, &view);
+        int result=storage_snapshot_open(disk, id, &view);
         if (result) return result;
         fi->fh=(uintptr_t)view;
         fi->direct_io=1;
@@ -227,8 +223,8 @@ static int dynfilefs_read(const char *path, char *buffer, size_t size, off_t off
         memcpy(buffer, list->bytes+offset, size);
         return size;
     }
-    char name[NAME_MAX+1];
-    if (snapshot_name(path, name)) return storage_snapshot_read(disk, (struct storage_snapshot *)(uintptr_t)fi->fh, buffer, size, offset);
+    uint64_t id=snapshot_id(path);
+    if (id) return storage_snapshot_read(disk, (struct storage_snapshot *)(uintptr_t)fi->fh, buffer, size, offset);
     return -ENOENT;
 }
 
@@ -239,23 +235,31 @@ static int dynfilefs_write(const char *path, const char *buffer, size_t size, of
     if (!strcmp(path, snapshot_path))
     {
         if (!size) return 0;
-        if (offset || size > NAME_MAX+8 || memchr(buffer, 0, size)) return -EINVAL;
-        char command[NAME_MAX+9];
+        if (offset || size > DYN_NAME_MAX+25 || memchr(buffer, 0, size)) return -EINVAL;
+        char command[DYN_NAME_MAX+26];
         memcpy(command, buffer, size);
         command[size]=0;
         if (command[size-1]=='\n') command[size-1]=0;
         int create=!strncmp(command, "create ", 7), protect=!strncmp(command, "protect ", 8);
         int autosnapshot=!strcmp(command, "autosnapshot on") || !strcmp(command, "autosnapshot off");
+        int rename=!strncmp(command, "rename ", 7);
         const char *identity=NULL;
         if (protect) identity=command+8;
         else if (!strncmp(command, "unprotect ", 10)) identity=command+10;
         uint64_t id=identity ? parse_id(identity) : 0;
         if (identity && !id) return -EINVAL;
-        int known=identity || create || autosnapshot;
+        if (rename)
+        {
+            if (strlen(command) < 24 || command[23]!=' ') return -EINVAL;
+            command[23]=0; id=parse_id(command+7);
+            if (!id) return -EINVAL;
+        }
+        int known=identity || create || autosnapshot || rename;
         if (!known && strncmp(command, "delete ", 7)) return -EINVAL;
         if (pthread_mutex_trylock(&snapshot_commands)) return -EBUSY;
         int result;
-        if (identity) result=storage_snapshot_protect(disk, id, protect);
+        if (rename) result=storage_snapshot_rename(disk, id, command+24);
+        else if (identity) result=storage_snapshot_protect(disk, id, protect);
         else if (autosnapshot) result=storage_set_autosnapshot(disk, !strcmp(command, "autosnapshot on"));
         else if (create)
         {
@@ -273,8 +277,8 @@ static int dynfilefs_write(const char *path, const char *buffer, size_t size, of
         pthread_mutex_unlock(&snapshot_commands);
         return result ? result : (int)size;
     }
-    char name[NAME_MAX+1];
-    if (text_file(path) || snapshot_name(path, name)) return -EROFS;
+    uint64_t id=snapshot_id(path);
+    if (text_file(path) || id) return -EROFS;
     return -ENOENT;
 }
 
@@ -284,10 +288,10 @@ static int dynfilefs_read_buf(const char *path, struct fuse_bufvec **result, siz
     if (offset < 0) return -EINVAL;
     int working=!strcmp(path, disk_path);
     uint64_t length;
-    char name[NAME_MAX+1];
+    uint64_t id=snapshot_id(path);
     if (working) length=storage_size(disk);
     else if (text_file(path)) length=((struct name_list *)(uintptr_t)fi->fh)->length;
-    else if (snapshot_name(path, name)) length=storage_snapshot_size((struct storage_snapshot *)(uintptr_t)fi->fh);
+    else if (id) length=storage_snapshot_size((struct storage_snapshot *)(uintptr_t)fi->fh);
     else return -ENOENT;
     if ((uint64_t)offset >= length) size=0;
     else if (size > length-(uint64_t)offset) size=length-(uint64_t)offset;
@@ -323,33 +327,33 @@ static int dynfilefs_read_buf(const char *path, struct fuse_bufvec **result, siz
 static int dynfilefs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
 {
     if (!strcmp(path, disk_path)) return storage_sync(disk);
-    char name[NAME_MAX+1];
-    return text_file(path) || snapshot_name(path, name) ? 0 : -ENOENT;
+    uint64_t id=snapshot_id(path);
+    return text_file(path) || id ? 0 : -ENOENT;
 }
 
 // Keep sizes fixed; shell redirection must not change a control before its write.
 static int dynfilefs_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
     if (!strcmp(path, disk_path)) return 0;
-    char name[NAME_MAX+1];
+    uint64_t id=snapshot_id(path);
     if (!strcmp(path, snapshot_path)) return size ? -EINVAL : 0;
-    return text_file(path) || snapshot_name(path, name) ? -EROFS : -ENOENT;
+    return text_file(path) || id ? -EROFS : -ENOENT;
 }
 
 // Preserve the virtual file's existing no-op permission-change behavior.
 static int dynfilefs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-    char name[NAME_MAX+1];
+    uint64_t id=snapshot_id(path);
     if (!strcmp(path, disk_path) || !strcmp(path, snapshot_path)) return 0;
-    return text_file(path) || snapshot_name(path, name) ? -EROFS : -ENOENT;
+    return text_file(path) || id ? -EROFS : -ENOENT;
 }
 
 // Ownership belongs to the mount rather than individual storage blocks.
 static int dynfilefs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
-    char name[NAME_MAX+1];
+    uint64_t id=snapshot_id(path);
     if (!strcmp(path, disk_path) || !strcmp(path, snapshot_path)) return 0;
-    return text_file(path) || snapshot_name(path, name) ? -EROFS : -ENOENT;
+    return text_file(path) || id ? -EROFS : -ENOENT;
 }
 
 static const struct fuse_operations operations={
@@ -393,9 +397,10 @@ static void usage(const char *program)
     printf("The latest ten automatic points are retained; manually named points stay until deleted.\n");
     printf("After interruption, the last successful fsync is recovered.\n");
     printf("Read mount_dir/snapshot to list saved names; write 'create NAME', 'delete NAME', 'protect ID' or 'unprotect ID'.\n");
+    printf("Write 'rename ID NAME' to rename a point while keeping its identity and saved content.\n");
     printf("Write 'autosnapshot off' or 'autosnapshot on' to control automatic clean-end points for this mount.\n");
     printf("Creation freezes a detected direct loop-mounted ext4/XFS filesystem automatically.\n");
-    printf("Saved images are read-only files at mount_dir/snapshots/NAME.dat.\n");
+    printf("Saved images are read-only files at mount_dir/snapshots/ID.dat, using stable IDs from snapshots.json.\n");
     printf("Read stats and snapshots.json for live JSON capacity and history reports.\n");
     printf("An open saved image cannot be deleted; reusable blocks are consumed before growing parts.\n");
 }

@@ -875,7 +875,7 @@ static int session_snapshot(struct storage *storage)
     return result ? result : prune_snapshots(storage);
 }
 
-// Explicit names are immutable; the generated prefix is reserved for automatic session points.
+// Explicit points use user names; the generated prefix is reserved for automatic session points.
 int storage_snapshot_create(struct storage *storage, const char *name)
 {
     int result=snapshot_name(name);
@@ -886,6 +886,37 @@ int storage_snapshot_create(struct storage *storage, const char *name)
     if (!result) result=prune_snapshots(storage);
     leave_barrier(storage);
     return result;
+}
+
+// Replace only a live point's name; stable image IDs keep open views valid.
+int storage_snapshot_rename(struct storage *storage, uint64_t id, const char *name)
+{
+    int result=snapshot_name(name);
+    if (!result && !strncmp(name, "auto-", 5)) result=-EINVAL;
+    if (result) return result;
+    char *label=strdup(name);
+    if (!label) return -ENOMEM;
+    enter_barrier(storage);
+    struct storage_snapshot *entry=snapshot_id(storage, id), *collision=snapshot_named(storage, name);
+    if (!entry || !entry->size) result=-ENOENT;
+    else if (collision && collision!=entry) result=-EEXIST;
+    struct snapshot saved={0};
+    if (!result) result=load_snapshot(storage, id, &saved);
+    if (!result && (saved.size!=entry->size || strcmp(saved.name, entry->name))) result=-EIO;
+    int published=0;
+    if (!result && !strcmp(entry->name, name)) result=fsync(storage->snapshots_fd) ? -errno : 0;
+    else if (!result)
+    {
+        strcpy(saved.name, name);
+        result=write_snapshot(storage, &saved, &published);
+    }
+    if (published)
+    {
+        free(entry->name); entry->name=label; label=NULL;
+    }
+    snapshot_free(&saved);
+    leave_barrier(storage);
+    free(label); return result;
 }
 
 // Deleting a point keeps its ID, name and parent so descendants retain their true history.
@@ -911,15 +942,15 @@ int storage_snapshot_protect(struct storage *storage, uint64_t id, int protect)
     return result;
 }
 
-// Return one chronological listing of restorable names for the control file and directory.
-int storage_snapshot_list(struct storage *storage, char **result)
+// Return chronological names for the control file or stable IDs for image paths.
+int storage_snapshot_list(struct storage *storage, int ids, char **result)
 {
     enter_io(storage);
     size_t length=0;
     for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next)
     {
         if (!entry->size) continue;
-        size_t size=strlen(entry->name)+1;
+        size_t size=ids ? 17 : strlen(entry->name)+1;
         if (size > INT_MAX-length) { leave_io(storage); return -EOVERFLOW; }
         length+=size;
     }
@@ -928,8 +959,12 @@ int storage_snapshot_list(struct storage *storage, char **result)
     for (struct storage_snapshot *entry=storage->snapshots; entry; entry=entry->next)
     {
         if (!entry->size) continue;
-        size_t size=strlen(entry->name);
-        memcpy(position, entry->name, size); position[size]='\n'; position+=size+1;
+        if (ids) position+=sprintf(position, "%016" PRIx64 "\n", entry->id);
+        else
+        {
+            size_t size=strlen(entry->name);
+            memcpy(position, entry->name, size); position[size]='\n'; position+=size+1;
+        }
     }
     *position=0; *result=list;
     leave_io(storage);
@@ -1049,27 +1084,25 @@ int storage_set_autosnapshot(struct storage *storage, int enabled)
     return 0;
 }
 
-// Named images retain the virtual size recorded at their own creation point.
-int storage_snapshot_stat(struct storage *storage, const char *name, uint64_t *size)
+// Stable image IDs retain their virtual size independently of mutable display names.
+int storage_snapshot_stat(struct storage *storage, uint64_t id, uint64_t *size)
 {
-    int result=snapshot_name(name);
-    if (result) return result;
+    int result=0;
     enter_io(storage);
-    struct storage_snapshot *entry=snapshot_named(storage, name);
-    if (!entry) result=-ENOENT;
+    struct storage_snapshot *entry=snapshot_id(storage, id);
+    if (!entry || !entry->size) result=-ENOENT;
     else *size=entry->size;
     leave_io(storage);
     return result;
 }
 
 // Open readers share one decoded immutable root; deletion is blocked until its last close.
-int storage_snapshot_open(struct storage *storage, const char *name, struct storage_snapshot **view)
+int storage_snapshot_open(struct storage *storage, uint64_t id, struct storage_snapshot **view)
 {
-    int result=snapshot_name(name);
-    if (result) return result;
+    int result=0;
     enter_barrier(storage);
-    struct storage_snapshot *entry=snapshot_named(storage, name);
-    if (!entry) result=-ENOENT;
+    struct storage_snapshot *entry=snapshot_id(storage, id);
+    if (!entry || !entry->size) result=-ENOENT;
     else
     {
         if (!entry->users) result=load_snapshot(storage, entry->id, &entry->state);

@@ -175,7 +175,7 @@ ls /mnt/changes/snapshots/
 ```
 
 Reading `snapshot` returns one saved name per line. Each write must contain one complete
-`create NAME`, `delete NAME`, `protect ID`, `unprotect ID`,
+`create NAME`, `rename ID NAME`, `delete NAME`, `protect ID`, `unprotect ID`,
 `autosnapshot on` or `autosnapshot off` command, with an optional final newline. Names may contain
 international text and spaces; shell-quote them as needed. Names cannot end in a dot or
 space, contain control characters, path separators or FAT-incompatible punctuation,
@@ -185,6 +185,14 @@ and allocation metadata at
 `changes.dat.snapshots/ID.snap`; its UTF-8 name is stored inside that checksummed
 record. Unchanged data blocks are shared. Deleted points retain only a 4096-byte
 history record with no mapping or allocation bitmap.
+
+`rename ID NAME` changes a live point's display name without changing its stable
+16-digit lowercase hexadecimal ID, creation time, ancestry or saved content.
+Names follow the same rules as creation and cannot replace another live name.
+Image paths use stable IDs, so open descriptors and mounted views remain valid
+while a point is renamed. Rename does not freeze the inner filesystem.
+Giving an automatic point a user name makes it a manual point, retained until
+explicitly deleted. Existing protection remains attached to its unchanged ID.
 
 Manual creation automatically freezes a directly loop-mounted ext4 or XFS filesystem using
 `virtual.dat`, saves the durable snapshot and resumes the filesystem. Detection uses
@@ -210,14 +218,16 @@ selects the saved virtual size, including a smaller size than the previous curre
 state; `-s` can grow it as usual. Current
 changes that must remain available should be saved as another named point first.
 
-Saved images are also available at `snapshots/NAME.dat` while the current disk stays
+Saved images are available only at `snapshots/ID.dat`, using each point's exact
+16-digit lowercase hexadecimal ID from `snapshots.json`. Human-readable names
+are catalog metadata, not image paths. IDs stay fixed through rename, while the current disk stays
 writable. These files are immutable virtual views, not additional physical disk copies.
-For a snapshot created while the inner filesystem was frozen:
+For a snapshot created while the inner filesystem was frozen (replace the sample ID):
 
 ```sh
 mkdir -p /mnt/old-state
 mount -t xfs -o loop,ro,nouuid,norecovery \
-    /mnt/changes/snapshots/before-update.dat /mnt/old-state
+    /mnt/changes/snapshots/0000000000000002.dat /mnt/old-state
 # For ext4, use: mount -t ext4 -o loop,ro,noload ...
 umount /mnt/old-state
 echo 'delete before-update' > /mnt/changes/snapshot

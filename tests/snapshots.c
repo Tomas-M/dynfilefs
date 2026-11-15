@@ -77,11 +77,25 @@ static void check_payload(struct storage *storage, struct storage_snapshot *view
     free(actual); free(expected);
 }
 
+// Resolve test display names to canonical identities without adding a production alias API.
+static uint64_t point_id(struct storage *storage, const char *name)
+{
+    char *report=NULL, marker[DYN_NAME_MAX+12]; uint64_t id=0;
+    assert(storage_snapshot_report(storage, 1, &report)>0);
+    assert(snprintf(marker, sizeof(marker), "\"name\":\"%s\"", name) < (int)sizeof(marker));
+    for (char *entry=strstr(report, "{\"id\":\""); entry; entry=strstr(entry+1, "{\"id\":\""))
+    {
+        char *end=strchr(entry, '}'), *label=strstr(entry, marker), *live=strstr(entry, "\"deleted\":false");
+        if (label && label < end && live && live < end) { assert(sscanf(entry+7, "%16" SCNx64, &id)==1); break; }
+    }
+    free(report); return id;
+}
+
 // Pin one old mapping while observing its content independently of the active cache.
 static void check_saved(struct storage *storage, const char *name, unsigned char value)
 {
     struct storage_snapshot *view=NULL;
-    assert(!storage_snapshot_open(storage, name, &view));
+    assert(!storage_snapshot_open(storage, point_id(storage, name), &view));
     check_payload(storage, view, value);
     storage_snapshot_close(storage, view);
 }
@@ -187,7 +201,7 @@ static void check_lineage(const char *path)
     assert(d.parent==b.id);
     check_saved(storage, "C", 'C');
     struct storage_snapshot *view=NULL;
-    assert(!storage_snapshot_open(storage, "B", &view));
+    assert(!storage_snapshot_open(storage, point_id(storage, "B"), &view));
     assert(storage_snapshot_delete(storage, "B")==-EBUSY);
     storage_snapshot_close(storage, view);
     struct storage_info before, after;
@@ -195,7 +209,7 @@ static void check_lineage(const char *path)
     uint64_t bytes=part_bytes(path);
     assert(!storage_snapshot_delete(storage, "B"));
     assert(!storage_get_info(storage, &after) && after.reusable >= before.reusable+PAYLOAD_SIZE);
-    assert(part_bytes(path)==bytes && storage_snapshot_open(storage, "B", &view)==-ENOENT);
+    assert(part_bytes(path)==bytes && storage_snapshot_open(storage, point_id(storage, "B"), &view)==-ENOENT);
     struct snapshot deleted=named_record(path, "B", 1);
     assert(deleted.id==b.id && deleted.parent==a.id && !deleted.root && !deleted.bits);
     finish_store(storage);
@@ -237,7 +251,7 @@ static void check_sessions(const char *path)
     }
     storage=open_store(path, 0, NULL);
     uint64_t size;
-    assert(!storage_snapshot_stat(storage, "keep forever", &size) && size==IMAGE_SIZE);
+    assert(!storage_snapshot_stat(storage, point_id(storage, "keep forever"), &size) && size==IMAGE_SIZE);
     size_t count=automatic_points(path);
     assert(!storage_get_info(storage, &first));
     finish_store(storage);
@@ -308,7 +322,7 @@ static void check_faults(const char *path)
     assert(storage_snapshot_create(storage, "unpublished")==-EIO);
     fail_snapshot_rename=0;
     uint64_t size;
-    assert(storage_snapshot_stat(storage, "unpublished", &size)==-ENOENT);
+    assert(storage_snapshot_stat(storage, point_id(storage, "unpublished"), &size)==-ENOENT);
     directory_sync_budget=0;
     assert(storage_snapshot_create(storage, "B")==-EIO);
     directory_sync_budget=-1;
@@ -388,7 +402,7 @@ static void check_concurrent(const char *path)
     struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
     write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "reader"));
     struct reader_task task={storage, NULL, 0};
-    assert(!storage_snapshot_open(storage, "reader", &task.view));
+    assert(!storage_snapshot_open(storage, point_id(storage, "reader"), &task.view));
     pthread_t reader;
     assert(!pthread_create(&reader, NULL, read_snapshot, &task));
     while (!__atomic_load_n(&task.started, __ATOMIC_ACQUIRE)) sched_yield();
@@ -425,10 +439,10 @@ static void check_sparse(const char *path)
     assert(storage_size(storage)==IMAGE_SIZE);
     assert(storage_read(storage, actual, IMAGE_SIZE, 0)==IMAGE_SIZE && !memcmp(actual, expected, IMAGE_SIZE));
     struct storage_snapshot *view=NULL;
-    assert(!storage_snapshot_open(storage, "large", &view) && storage_snapshot_size(view)==16*MIB);
+    assert(!storage_snapshot_open(storage, point_id(storage, "large"), &view) && storage_snapshot_size(view)==16*MIB);
     assert(storage_snapshot_read(storage, view, actual, 5, 15*MIB)==5 && !memcmp(actual, "large", 5));
     storage_snapshot_close(storage, view);
-    assert(!storage_snapshot_open(storage, "small", &view));
+    assert(!storage_snapshot_open(storage, point_id(storage, "small"), &view));
     memset(actual, 0xcc, IMAGE_SIZE+37);
     assert(storage_snapshot_read(storage, view, actual, IMAGE_SIZE+37, 0)==IMAGE_SIZE);
     assert(!memcmp(actual, expected, IMAGE_SIZE));
@@ -445,7 +459,7 @@ static void check_mount_protection(const char *path)
 {
     struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
     char *names=NULL;
-    assert(storage_snapshot_list(storage, &names)>0);
+    assert(storage_snapshot_list(storage, 0, &names)>0);
     char *newline=strchr(names, '\n');
     if (newline) *newline=0;
     struct snapshot first=named_record(path, names, 0);
@@ -520,7 +534,7 @@ static void check_reclaimable(const char *path)
     uint64_t gain=reclaimable(storage, "A");
     assert(gain >= PAYLOAD_SIZE && !reclaimable(storage, "shared"));
     struct storage_snapshot *view=NULL;
-    assert(!storage_snapshot_open(storage, "A", &view));
+    assert(!storage_snapshot_open(storage, point_id(storage, "A"), &view));
     assert(storage_snapshot_delete(storage, "A")==-EBUSY && reclaimable(storage, "A")==gain);
     storage_snapshot_close(storage, view);
     struct storage_info before, after;
@@ -580,6 +594,69 @@ static void check_autosnapshot(const char *path)
     puts("PASS: runtime automatic-point policy, flushed clean end, crash/clean baseline restore and explicit points");
 }
 
+// Names change independently of IDs, ancestry, saved bytes, open readers and protection.
+static void check_rename(const char *path)
+{
+    struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
+    struct storage_info info;
+    assert(!storage_get_info(storage, &info));
+    assert(!storage_snapshot_rename(storage, info.parent, "Kept automatic") && !automatic_points(path));
+    write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "Original"));
+    struct snapshot before=named_record(path, "Original", 0);
+    assert(!storage_snapshot_create(storage, "Child"));
+    struct snapshot child=named_record(path, "Child", 0);
+    assert(child.parent==before.id);
+    write_payload(storage, 'B'); assert(!storage_sync(storage));
+    const char *name="  Český  系统 😀 é Iİı Việt";
+    struct storage_snapshot *view=NULL;
+    assert(!storage_snapshot_open(storage, point_id(storage, "Original"), &view));
+    assert(!storage_snapshot_protect(storage, before.id, 1));
+    struct storage_info old_space, new_space;
+    assert(!storage_get_info(storage, &old_space));
+    assert(!storage_snapshot_rename(storage, before.id, name));
+    check_payload(storage, view, 'A'); check_saved(storage, name, 'A');
+    assert(!storage_get_info(storage, &new_space) && old_space.reusable==new_space.reusable);
+    struct snapshot after=named_record(path, name, 0);
+    assert(after.id==before.id && after.parent==before.parent && after.created==before.created && after.size==before.size);
+    assert(after.root_count==before.root_count && after.slots==before.slots);
+    assert(!memcmp(after.root, before.root, after.root_count*8) && !memcmp(after.bits, before.bits, (size_t)((after.slots+63)/64)*8));
+    uint64_t size;
+    assert(!storage_snapshot_stat(storage, before.id, &size) && size==IMAGE_SIZE);
+    assert(!storage_snapshot_stat(storage, point_id(storage, name), &size) && size==IMAGE_SIZE);
+    assert(storage_snapshot_delete(storage, name)==-EBUSY);
+    assert(storage_snapshot_rename(storage, before.id, "Child")==-EEXIST);
+    assert(storage_snapshot_rename(storage, UINT64_MAX, "Absent")==-ENOENT);
+    assert(storage_snapshot_rename(storage, before.id, "auto-user")==-EINVAL);
+    assert(storage_snapshot_rename(storage, before.id, "trailing ")==-EINVAL);
+    assert(storage_snapshot_rename(storage, before.id, "")==-EINVAL);
+    assert(!reclaimable(storage, name));
+    assert(!storage_snapshot_delete(storage, "Child"));
+    assert(storage_snapshot_rename(storage, child.id, "Deleted")==-ENOENT);
+    uint64_t gain=reclaimable(storage, name); assert(gain>=PAYLOAD_SIZE);
+    fail_snapshot_rename=1;
+    assert(storage_snapshot_rename(storage, before.id, "Not published")==-EIO);
+    fail_snapshot_rename=0;
+    assert(!storage_snapshot_stat(storage, point_id(storage, name), &size));
+    directory_sync_budget=0;
+    assert(storage_snapshot_rename(storage, before.id, "Published")==-EIO);
+    directory_sync_budget=-1;
+    assert(!storage_snapshot_stat(storage, before.id, &size));
+    assert(!storage_snapshot_stat(storage, point_id(storage, "Published"), &size));
+    assert(!storage_snapshot_rename(storage, before.id, "Published"));
+    assert(storage_snapshot_create(storage, "Published")==-EEXIST);
+    assert(reclaimable(storage, "Published")==gain);
+    char full[DYN_NAME_MAX+1];
+    for (size_t i=0; i < 124; i++) memcpy(full+i*2, "é", 2);
+    memcpy(full+248, "AB", 3);
+    assert(!storage_snapshot_rename(storage, before.id, full));
+    check_payload(storage, view, 'A'); storage_snapshot_close(storage, view);
+    finish_store(storage); storage=open_store(path, 0, full);
+    check_payload(storage, NULL, 'A'); check_saved(storage, full, 'A');
+    finish_store(storage);
+    snapshot_free(&before); snapshot_free(&after); snapshot_free(&child);
+    puts("PASS: stable-ID rename preserves Unicode names, content, ancestry and protection; stable open views and publication failures remain coherent");
+}
+
 // Every fixture lives in its own directory and remains inspectable on failure.
 int main(int argc, char **argv)
 {
@@ -598,5 +675,6 @@ int main(int argc, char **argv)
     assert(snprintf(path, sizeof(path), "%s/protection", directory) < (int)sizeof(path)); check_mount_protection(path);
     assert(snprintf(path, sizeof(path), "%s/reclaimable", directory) < (int)sizeof(path)); check_reclaimable(path);
     assert(snprintf(path, sizeof(path), "%s/autosnapshot", directory) < (int)sizeof(path)); check_autosnapshot(path);
+    assert(snprintf(path, sizeof(path), "%s/rename", directory) < (int)sizeof(path)); check_rename(path);
     return 0;
 }

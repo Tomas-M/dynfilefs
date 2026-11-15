@@ -82,6 +82,12 @@ def snapshot_command(mount, command):
         assert control.write(data)==len(data)
 
 
+# Resolve test names through the catalog while production image paths use only IDs.
+def snapshot_image(mount, name):
+    point=next(point for point in json.loads((mount/'snapshots.json').read_text())['snapshots'] if point['name']==name and not point['deleted'])
+    return mount/'snapshots'/(point['id']+'.dat')
+
+
 # Require errors from the kernel-facing interface rather than prechecking permissions.
 def expect_errno(callback, expected):
     try:
@@ -102,9 +108,9 @@ def check_raw(binary, root):
         with path.open('r+b', buffering=0) as current:
             assert os.pwrite(current.fileno(), original, 4095)==len(original)
             snapshot_command(mount, 'create '+name)
-            saved=mount/'snapshots'/(name+'.dat')
+            saved=snapshot_image(mount,name)
             assert name in (mount/'snapshot').read_text(encoding='utf-8').splitlines()
-            assert name+'.dat' in {entry.name for entry in (mount/'snapshots').iterdir()}
+            assert saved.name in {entry.name for entry in (mount/'snapshots').iterdir()}
             assert saved.stat().st_size==8*MiB
             with saved.open('rb', buffering=0) as view:
                 assert os.pread(view.fileno(), len(original), 4095)==original
@@ -132,13 +138,13 @@ def check_raw(binary, root):
         assert path.stat().st_size==8*MiB
         with path.open('rb', buffering=0) as current:
             assert os.pread(current.fileno(), len(original), 4095)==original
-        assert (mount/'snapshots'/'later.dat').read_bytes()[4095:4095+len(original)]==b'C'*len(original)
+        assert snapshot_image(mount,'later').read_bytes()[4095:4095+len(original)]==b'C'*len(original)
     with mounted(binary, storage, mount, size=12) as path:
         snapshot_command(mount, 'create larger')
         assert path.stat().st_size==12*MiB
     with mounted(binary, storage, mount, options='restore='+name) as path:
         assert path.stat().st_size==8*MiB
-        assert (mount/'snapshots'/'larger.dat').stat().st_size==12*MiB
+        assert snapshot_image(mount,'larger').stat().st_size==12*MiB
     with mounted(binary, storage, mount, size=10, restore=name) as path:
         assert path.stat().st_size==10*MiB
         before_parts={part.name:part.stat().st_size for part in storage.parent.glob(storage.name+'.[0-9]*')}
@@ -151,7 +157,7 @@ def check_raw(binary, root):
     print('PASS: Unicode controls, immutable views, EBUSY, errors, restore and saved sizes', flush=True)
 
 
-# Long names force directory reads to resume past the first FUSE response buffer.
+# Many stable image IDs force directory reads past the first FUSE response buffer.
 def check_catalog(binary, root):
     storage, mount=root/'catalog', root/'catalog-mount'
     names=[f'{i:03}-'+'snapshot-'*25 for i in range(150)]
@@ -159,7 +165,8 @@ def check_catalog(binary, root):
         for name in reversed(names):
             snapshot_command(mount, 'create '+name)
         assert [name for name in (mount/'snapshot').read_text(encoding='utf-8').splitlines() if not name.startswith('auto-')]==list(reversed(names))
-        assert sorted(entry.name for entry in (mount/'snapshots').iterdir() if not entry.name.startswith('auto-'))==[name+'.dat' for name in names]
+        points=json.loads((mount/'snapshots.json').read_text())['snapshots']
+        assert sorted(entry.name for entry in (mount/'snapshots').iterdir())==sorted(point['id']+'.dat' for point in points if not point['deleted'])
     with mounted(binary, storage, mount):
         assert [name for name in (mount/'snapshot').read_text(encoding='utf-8').splitlines() if not name.startswith('auto-')]==list(reversed(names))
         for name in names:
@@ -187,7 +194,7 @@ def check_filesystem(binary, root, filesystem):
             # A timed external writer makes failed thaw observable without hanging this test.
             subprocess.run(['python3', '-c', 'from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b"after snapshot")', str(live/'kept.txt')], check=True, timeout=15)
             (live/'later.txt').write_text('not in the saved point')
-            image=mount/'snapshots'/'frozen.dat'
+            image=snapshot_image(mount,'frozen')
             with inner_mount(image, old, filesystem, readonly=True):
                 assert (old/'kept.txt').read_bytes()==content
                 assert not (old/'later.txt').exists()
@@ -317,6 +324,58 @@ def check_autosnapshot(binary, root):
     print('PASS: autosnapshot on/off controls, invalid commands, manual points and clean-end history policy',flush=True)
 
 
+# Stable image IDs preserve paths, descriptors and mounted views through arbitrary name edits.
+def check_rename(binary, root):
+    storage, mount=root/'rename', root/'rename-mount'
+    name='  Český  系统 😀 é Iİı Việt'
+    full='多'*80+'😀'*2+'AB'
+    assert len(full.encode())==250
+    with mounted(binary, storage, mount, size=8) as path:
+        initial=json.loads((mount/'snapshots.json').read_text())['snapshots'][0]
+        snapshot_command(mount,'rename '+initial['id']+' Kept automatic')
+        initial_after=json.loads((mount/'snapshots.json').read_text())['snapshots'][0]
+        assert initial_after['id']==initial['id'] and not initial_after['automatic']
+        with path.open('r+b',buffering=0) as current:
+            assert os.pwrite(current.fileno(),b'A'*4096,0)==4096
+            snapshot_command(mount,'create Original');snapshot_command(mount,'create Child')
+            before=json.loads((mount/'snapshots.json').read_text())
+            saved=next(point for point in before['snapshots'] if point['name']=='Original')
+            snapshot_command(mount,'protect '+saved['id'])
+            assert os.pwrite(current.fileno(),b'B'*4096,0)==4096;os.fsync(current.fileno())
+            reusable=json.loads((mount/'stats').read_text())['reusableBytes']
+            image=mount/'snapshots'/(saved['id']+'.dat')
+            with image.open('rb',buffering=0) as view:
+                snapshot_command(mount,'rename '+saved['id']+' '+name)
+                assert os.pread(view.fileno(),4096,0)==b'A'*4096 and os.fstat(view.fileno()).st_size==8*MiB
+                assert image.read_bytes()[:4096]==b'A'*4096 and snapshot_image(mount,name)==image
+                snapshot_command(mount,'rename '+saved['id']+' '+full)
+                assert os.pread(view.fileno(),4096,0)==b'A'*4096 and os.fstat(view.fileno()).st_size==8*MiB
+                assert image.read_bytes()[:4096]==b'A'*4096 and snapshot_image(mount,full)==image
+                snapshot_command(mount,'rename '+saved['id']+' '+name)
+            expect_errno(lambda:os.open(mount/'snapshots'/'Original.dat',os.O_RDONLY),errno.ENOENT)
+            assert name in (mount/'snapshot').read_text().splitlines()
+            after=json.loads((mount/'snapshots.json').read_text());renamed=next(point for point in after['snapshots'] if point['id']==saved['id'])
+            for key in ('id','parent','created','deleted'):assert renamed[key]==saved[key]
+            assert renamed['name']==name and renamed['protected'] and not renamed['automatic']
+            assert next(point for point in after['snapshots'] if point['name']=='Child')['parent']==saved['id']
+            assert json.loads((mount/'stats').read_text())['reusableBytes']==reusable
+            expect_errno(lambda:snapshot_command(mount,'rename '+saved['id']+' Child'),errno.EEXIST)
+            expect_errno(lambda:snapshot_command(mount,'delete '+name),errno.EBUSY)
+            for command in ('rename '+saved['id'],'rename '+saved['id']+' ','rename not-an-id New','rename '+saved['id']+' auto-forbidden','rename '+saved['id']+' trailing '):
+                expect_errno(lambda value=command:snapshot_command(mount,value),errno.EINVAL)
+            expect_errno(lambda:snapshot_command(mount,'rename ffffffffffffffff Absent'),errno.ENOENT)
+            snapshot_command(mount,'rename '+saved['id']+' '+full)
+            assert image.stat().st_size==8*MiB
+            expect_errno(lambda:os.open(mount/'snapshots'/(full+'.dat'),os.O_RDONLY),errno.ENOENT)
+            snapshot_command(mount,'unprotect '+saved['id'])
+    with mounted(binary, storage, mount, restore=full) as path:
+        assert path.read_bytes()[:4096]==b'A'*4096
+        history=json.loads((mount/'snapshots.json').read_text())
+        restored=next(point for point in history['snapshots'] if point['id']==saved['id'])
+        assert restored['name']==full and history['currentParent']==saved['id']
+    print('PASS: stable-ID rename, exact Unicode/space/250-byte names, stable open views, ancestry and invalid commands',flush=True)
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('binary')
@@ -329,6 +388,7 @@ if __name__=='__main__':
         check_catalog(binary, root)
         check_history(binary, root)
         check_autosnapshot(binary, root)
+        check_rename(binary, root)
         if not args.skip_loop:
             check_filesystem(binary, root, 'ext4')
             check_filesystem(binary, root, 'xfs')

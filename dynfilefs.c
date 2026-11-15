@@ -245,15 +245,18 @@ static int dynfilefs_write(const char *path, const char *buffer, size_t size, of
         command[size]=0;
         if (command[size-1]=='\n') command[size-1]=0;
         int create=!strncmp(command, "create ", 7), protect=!strncmp(command, "protect ", 8);
+        int autosnapshot=!strcmp(command, "autosnapshot on") || !strcmp(command, "autosnapshot off");
         const char *identity=NULL;
         if (protect) identity=command+8;
         else if (!strncmp(command, "unprotect ", 10)) identity=command+10;
         uint64_t id=identity ? parse_id(identity) : 0;
         if (identity && !id) return -EINVAL;
-        if (!identity && !create && strncmp(command, "delete ", 7)) return -EINVAL;
+        int known=identity || create || autosnapshot;
+        if (!known && strncmp(command, "delete ", 7)) return -EINVAL;
         if (pthread_mutex_trylock(&snapshot_commands)) return -EBUSY;
         int result;
         if (identity) result=storage_snapshot_protect(disk, id, protect);
+        else if (autosnapshot) result=storage_set_autosnapshot(disk, !strcmp(command, "autosnapshot on"));
         else if (create)
         {
             struct filesystem_freeze *state=NULL;
@@ -390,6 +393,7 @@ static void usage(const char *program)
     printf("The latest ten automatic points are retained; manually named points stay until deleted.\n");
     printf("After interruption, the last successful fsync is recovered.\n");
     printf("Read mount_dir/snapshot to list saved names; write 'create NAME', 'delete NAME', 'protect ID' or 'unprotect ID'.\n");
+    printf("Write 'autosnapshot off' or 'autosnapshot on' to control automatic clean-end points for this mount.\n");
     printf("Creation freezes a detected direct loop-mounted ext4/XFS filesystem automatically.\n");
     printf("Saved images are read-only files at mount_dir/snapshots/NAME.dat.\n");
     printf("Read stats and snapshots.json for live JSON capacity and history reports.\n");

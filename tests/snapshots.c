@@ -547,6 +547,39 @@ static void check_reclaimable(const char *path)
     puts("PASS: reclaimableBytes matches deletion gains and excludes shared/current/checkpoint/deferred-read blocks");
 }
 
+// Disabling automatic points preserves working durability while callers restore their own baseline.
+static void check_autosnapshot(const char *path)
+{
+    struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
+    struct storage_info info;
+    assert(!storage_get_info(storage, &info) && info.automatic_snapshots==1);
+    write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "baseline"));
+    size_t automatic=automatic_points(path);
+    assert(!storage_set_autosnapshot(storage, 0));
+    assert(!storage_get_info(storage, &info) && !info.automatic_snapshots);
+    write_payload(storage, 'B');
+    finish_store(storage);
+    assert(automatic_points(path)==automatic);
+    storage=open_store(path, 0, "baseline");
+    check_payload(storage, NULL, 'A');
+    assert(!storage_get_info(storage, &info) && info.automatic_snapshots==1);
+    assert(automatic_points(path)==automatic);
+    assert(!storage_set_autosnapshot(storage, 0));
+    write_payload(storage, 'C'); assert(!storage_sync(storage));
+    storage_close(storage);
+    storage=open_store(path, 0, "baseline");
+    check_payload(storage, NULL, 'A');
+    assert(automatic_points(path)==automatic);
+    assert(!storage_set_autosnapshot(storage, 0));
+    write_payload(storage, 'D'); assert(!storage_snapshot_create(storage, "intentional"));
+    check_saved(storage, "intentional", 'D');
+    assert(!storage_set_autosnapshot(storage, 1));
+    write_payload(storage, 'E'); finish_store(storage);
+    assert(automatic_points(path)==automatic+1);
+    storage=open_store(path, 0, NULL);check_payload(storage, NULL, 'E');finish_store(storage);
+    puts("PASS: runtime automatic-point policy, flushed clean end, crash/clean baseline restore and explicit points");
+}
+
 // Every fixture lives in its own directory and remains inspectable on failure.
 int main(int argc, char **argv)
 {
@@ -564,5 +597,6 @@ int main(int argc, char **argv)
     assert(snprintf(path, sizeof(path), "%s/sparse", directory) < (int)sizeof(path)); check_sparse(path);
     assert(snprintf(path, sizeof(path), "%s/protection", directory) < (int)sizeof(path)); check_mount_protection(path);
     assert(snprintf(path, sizeof(path), "%s/reclaimable", directory) < (int)sizeof(path)); check_reclaimable(path);
+    assert(snprintf(path, sizeof(path), "%s/autosnapshot", directory) < (int)sizeof(path)); check_autosnapshot(path);
     return 0;
 }

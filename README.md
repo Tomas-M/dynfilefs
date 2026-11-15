@@ -37,10 +37,12 @@ dynfilefs -i -f /var/lib/changes.dat
 ```
 
 Prints `key:value` lines: `version`, `size`, `sizeMiB`, `split`, `splitMiB`,
-`blockSize`, `reusableBytes` and `currentParent`. Sizes without `MiB` are exact bytes;
+`blockSize`, `reusableBytes`, `currentParent` and `automaticSnapshots`. Sizes without `MiB` are exact bytes;
 MiB values are integers rounded down. `currentParent` is a stable 16-digit hexadecimal
 snapshot ID, or `none`; JSON uses a string or `null`. Inspection includes the latest
 complete checkpoint/log records without publishing recovery or creating a lock.
+`automaticSnapshots` is a runtime setting, so offline inspection returns `null`
+in JSON or `none` in text output.
 An actively mounted store returns `EBUSY`: use its live `stats` and `snapshots.json`
 files instead. Errors go to stderr with a nonzero exit status.
 
@@ -112,6 +114,25 @@ parent are protected, so the limit may temporarily be exceeded. Manually named
 points remain until explicitly deleted. Automatically removed points retain small
 history records but no references to their former data blocks.
 
+Automatic clean-end points can be disabled for the current mount:
+
+```sh
+echo 'autosnapshot off' > /mnt/changes/snapshot
+cat /mnt/changes/stats
+echo 'autosnapshot on' > /mnt/changes/snapshot
+```
+
+Live `stats` reports the boolean `automaticSnapshots`. It defaults to `true` on
+every mount. Disabling it suppresses the automatic clean-end point and automatic
+pruning at shutdown; explicit named creation remains available. Working writes
+still reach their normal durable checkpoints and clean shutdown still flushes
+and publishes the current state. This switch does not erase changes or implement
+discard by itself: an ordinary later mount continues that working state and can
+save its startup point. A caller implementing discard must persist its own
+baseline choice and explicitly restore that point on the next mount, including
+after a crash. The runtime switch does not change the storage format or the
+normal ten-point retention policy when automatic point creation is enabled.
+
 After interruption, the current state recovers the last successful `fsync`. No
 clean-end point is created by the interrupted process. Startup can save the recovered
 block state, which may still need the inner filesystem's ordinary journal replay.
@@ -154,7 +175,8 @@ ls /mnt/changes/snapshots/
 ```
 
 Reading `snapshot` returns one saved name per line. Each write must contain one complete
-`create NAME`, `delete NAME`, `protect ID` or `unprotect ID` command, with an optional final newline. Names may contain
+`create NAME`, `delete NAME`, `protect ID`, `unprotect ID`,
+`autosnapshot on` or `autosnapshot off` command, with an optional final newline. Names may contain
 international text and spaces; shell-quote them as needed. Names cannot end in a dot or
 space, contain control characters, path separators or FAT-incompatible punctuation,
 or exceed 250 UTF-8 bytes. The `auto-` prefix is reserved for system-created points.

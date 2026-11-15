@@ -286,6 +286,37 @@ def check_history(binary, root):
     print('PASS: offline/live JSON lineage, branching, deleted ancestors, reused names and reusableBytes', flush=True)
 
 
+# The runtime switch suppresses automatic history only; callers choose the next restored state.
+def check_autosnapshot(binary, root):
+    storage,mount=root/'automatic-policy',root/'automatic-policy-mount'
+    with mounted(binary, storage, mount, size=8) as path:
+        assert json.loads((mount/'stats').read_text())['automaticSnapshots'] is True
+        with path.open('r+b',buffering=0) as current:
+            assert os.pwrite(current.fileno(),b'A'*4096,0)==4096
+            snapshot_command(mount,'create baseline')
+            snapshot_command(mount,'autosnapshot off')
+            assert json.loads((mount/'stats').read_text())['automaticSnapshots'] is False
+            for invalid in ('autosnapshot','autosnapshot true','autosnapshot on extra','autosnapshot off '):
+                expect_errno(lambda:snapshot_command(mount,invalid),errno.EINVAL)
+                assert json.loads((mount/'stats').read_text())['automaticSnapshots'] is False
+            snapshot_command(mount,'create intentional')
+            before=json.loads((mount/'snapshots.json').read_text())
+            assert os.pwrite(current.fileno(),b'B'*4096,0)==4096
+    after=json.loads(subprocess.check_output([binary,'-f',str(storage),'--snapshots','--json'],text=True))
+    assert [(point['id'],point['deleted']) for point in before['snapshots']]==[(point['id'],point['deleted']) for point in after['snapshots']]
+    with mounted(binary, storage, mount, restore='baseline') as path:
+        assert path.read_bytes()[:4096]==b'A'*4096
+        assert json.loads((mount/'stats').read_text())['automaticSnapshots'] is True
+        snapshot_command(mount,'autosnapshot off');snapshot_command(mount,'autosnapshot on')
+        assert json.loads((mount/'stats').read_text())['automaticSnapshots'] is True
+        with path.open('r+b',buffering=0) as current:
+            assert os.pwrite(current.fileno(),b'C'*4096,0)==4096
+    final=json.loads(subprocess.check_output([binary,'-f',str(storage),'--snapshots','--json'],text=True))
+    assert len(final['snapshots'])==len(after['snapshots'])+1
+    assert sum(point['automatic'] for point in final['snapshots'])==sum(point['automatic'] for point in after['snapshots'])+1
+    print('PASS: autosnapshot on/off controls, invalid commands, manual points and clean-end history policy',flush=True)
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('binary')
@@ -297,6 +328,7 @@ if __name__=='__main__':
         check_raw(binary, root)
         check_catalog(binary, root)
         check_history(binary, root)
+        check_autosnapshot(binary, root)
         if not args.skip_loop:
             check_filesystem(binary, root, 'ext4')
             check_filesystem(binary, root, 'xfs')

@@ -22,6 +22,7 @@ struct storage_snapshot;
 struct storage_info
 {
     uint64_t version, size, split, reusable, parent;
+    int automatic_snapshots;
 };
 
 int storage_inspect(const char *path, struct storage_info *info);
@@ -36,6 +37,7 @@ int storage_sync(struct storage *storage);
 // Finalize a stopped mount; afterward only retry finish or close the instance.
 int storage_finish(struct storage *storage);
 int storage_get_info(struct storage *storage, struct storage_info *info);
+int storage_set_autosnapshot(struct storage *storage, int enabled);
 int storage_snapshot_create(struct storage *storage, const char *name);
 int storage_snapshot_delete(struct storage *storage, const char *name);
 int storage_snapshot_protect(struct storage *storage, uint64_t id, int protect);

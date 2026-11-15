@@ -125,6 +125,8 @@ int snapshot_report(const struct snapshot_record *records, size_t count, uint64_
 // Use the same exact capacity fields for offline inspection and the live stats file.
 int storage_info_report(const struct storage_info *info, int json, char **result)
 {
+    const char *automatic="null";
+    if (info->automatic_snapshots >= 0) automatic=info->automatic_snapshots ? "true" : "false";
     char *bytes=NULL;
     size_t length=0;
     FILE *stream=open_memstream(&bytes, &length);
@@ -135,7 +137,7 @@ int storage_info_report(const struct storage_info *info, int json, char **result
             ",\"split\":%" PRIu64 ",\"splitMiB\":%" PRIu64 ",\"blockSize\":%d,\"reusableBytes\":%" PRIu64
             ",\"currentParent\":", info->version, info->size, info->size/1048576, info->split, info->split/1048576,
             DYN_BLOCK_SIZE, info->reusable);
-        write_id(stream, info->parent); fputs("}\n", stream);
+        write_id(stream, info->parent); fprintf(stream, ",\"automaticSnapshots\":%s}\n", automatic);
     }
     else
     {
@@ -144,6 +146,7 @@ int storage_info_report(const struct storage_info *info, int json, char **result
             info->version, info->size, info->size/1048576, info->split, info->split/1048576, DYN_BLOCK_SIZE, info->reusable);
         if (info->parent) fprintf(stream, "%016" PRIx64 "\n", info->parent);
         else fputs("none\n", stream);
+        fprintf(stream, "automaticSnapshots:%s\n", info->automatic_snapshots < 0 ? "none" : automatic);
     }
     int error=ferror(stream) ? -EIO : 0;
     if (fclose(stream) && !error) error=-errno;

@@ -49,7 +49,7 @@ struct storage_snapshot
 struct storage
 {
     char *path;
-    int directory_fd, lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot, usage_valid;
+    int directory_fd, lock_fd, journal_fd, snapshots_fd, changed, finished, directory_dirty, force_snapshot, usage_valid, automatic_snapshots;
     uint64_t size, part_size, capacity, sequence, committed_sequence, log_length, checkpoint_slots, parent, max_id;
     size_t root_count, part_count, dirty_count, tail_count, checkpoint_roots;
     size_t tails[MAX_PARTS];
@@ -1034,9 +1034,18 @@ int storage_get_info(struct storage *storage, struct storage_info *info)
     enter_io(storage);
     pthread_mutex_lock(&storage->allocation);
     *info=(struct storage_info){DYN_FORMAT, storage->size, storage->part_size,
-        map_reusable_bytes(&storage->map), storage->parent};
+        map_reusable_bytes(&storage->map), storage->parent, storage->automatic_snapshots};
     pthread_mutex_unlock(&storage->allocation);
     leave_io(storage);
+    return 0;
+}
+
+// Control automatic end-of-session points for this mount without changing write durability.
+int storage_set_autosnapshot(struct storage *storage, int enabled)
+{
+    enter_barrier(storage);
+    storage->automatic_snapshots=!!enabled;
+    leave_barrier(storage);
     return 0;
 }
 
@@ -1143,12 +1152,12 @@ static int publish_current(struct storage *storage)
     return result;
 }
 
-// Complete the stopped session with one saved point and its durable active parent.
+// Flush the stopped session, optionally saving its end state as a history point.
 int storage_finish(struct storage *storage)
 {
     enter_barrier(storage);
     if (storage->finished) { leave_barrier(storage); return 0; }
-    int result=session_snapshot(storage);
+    int result=storage->automatic_snapshots ? session_snapshot(storage) : sync_locked(storage);
     if (!result) result=publish_current(storage);
     if (!result) storage->finished=1;
     leave_barrier(storage);
@@ -1166,6 +1175,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
 {
     struct storage *storage=calloc(1, sizeof(*storage));
     if (!storage) return -ENOMEM;
+    storage->automatic_snapshots=1;
     storage->directory_fd=-1; storage->lock_fd=-1; storage->journal_fd=-1; storage->snapshots_fd=-1;
     for (size_t i=0; i < MAX_PARTS; i++) storage->parts[i].fd=-1;
     pthread_mutex_init(&storage->allocation, NULL);

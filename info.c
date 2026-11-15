@@ -263,6 +263,7 @@ static int inspect_storage(const char *path, struct storage_info *info, int json
         result=info_files(path, before);
         if (result) { if (lock >= 0) close(lock); return result; }
         memset(info, 0, sizeof(*info));
+        info->automatic_snapshots=-1;
         if (report) *report=NULL;
         result=inspect_state(path, info, json, report);
         int end_lock=-1, error=inspect_lock(path, &end_lock), changed=0;

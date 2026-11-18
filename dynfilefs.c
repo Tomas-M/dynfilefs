@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include "storage.h"
 #include "format.h"
+#include "durable.h"
 #include "freeze.h"
 #include "report.h"
 
@@ -376,7 +377,7 @@ static const struct fuse_operations operations={
 // Keep command help aligned with the physical split limit and session semantics.
 static void usage(const char *program)
 {
-    printf("DynFileFS 6.02 (storage format %d)\n\n", DYN_FORMAT);
+    printf("DynFileFS 6.03 (storage format %d)\n\n", DYN_FORMAT);
     printf("usage: %s -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]\n", program);
     printf("       %s -o size=size_MiB,split=split_MiB storage_file mount_dir\n", program);
     printf("       %s -f storage_file --info|--snapshots [--json]\n", program);
@@ -434,6 +435,7 @@ static void add_protection(const char *text, uint64_t **ids, size_t *count)
 // Parse mount and fstab options.
 int main(int argc, char **argv)
 {
+    if (argc>1 && !strcmp(argv[1], "--metadata")) return durable_command(argc, argv);
     const char *file="", *mount="", *restore=NULL;
     uint64_t *protected_ids=NULL;
     size_t protected_count=0;

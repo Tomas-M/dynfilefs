@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dirent.h>
 #include <errno.h>
+#include <endian.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -19,36 +20,48 @@
 #define IMAGE_SIZE (8*MIB)
 #define PAYLOAD_SIZE (384*1024)
 
-static int directory_sync_budget=-1, fail_snapshot_rename, fail_parent_log_sync;
+static int fail_intent_write, fail_parent_log_sync;
+static const char *fail_canonical_name;
+static uint64_t fail_deleted_id;
 int __real_fsync(int fd);
-int __wrap_fsync(int fd);
-int __real_renameat(int olddir, const char *oldname, int newdir, const char *newname);
-int __wrap_renameat(int olddir, const char *oldname, int newdir, const char *newname);
+ssize_t __real_pwrite(int fd, const void *bytes, size_t count, off_t offset);
+ssize_t __real_pwrite64(int fd, const void *bytes, size_t count, off_t offset);
 
-// Inject failure after publication without failing the preceding data flush.
+// Identify actual production intent and metadata files without relying on call counts.
+static int descriptor_suffix(int fd, const char *suffix)
+{
+    char descriptor[64], path[PATH_MAX];
+    snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", fd);
+    ssize_t length=readlink(descriptor, path, sizeof(path)); size_t count=strlen(suffix);
+    return length>=(ssize_t)count && !memcmp(path+length-count, suffix, count);
+}
+
+// Fail canonical flush only after the requested new record has a complete durable redo.
 int __wrap_fsync(int fd)
 {
-    if (directory_sync_budget >= 0 || fail_parent_log_sync)
+    if (fail_parent_log_sync && descriptor_suffix(fd, ".log")) { errno=EIO; return -1; }
+    if ((fail_canonical_name || fail_deleted_id) && descriptor_suffix(fd, ".snap"))
     {
-        char descriptor[64], path[PATH_MAX];
-        snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", fd);
-        ssize_t length=readlink(descriptor, path, sizeof(path));
-        if (fail_parent_log_sync && length >= 4 && !memcmp(path+length-4, ".log", 4)) { errno=EIO; return -1; }
-        if (directory_sync_budget >= 0 && length >= 10 && !memcmp(path+length-10, ".snapshots", 10))
-        {
-            if (!directory_sync_budget) { errno=EIO; return -1; }
-            directory_sync_budget--;
-        }
+        unsigned char header[4096]; assert(pread(fd, header, sizeof(header), 0)==sizeof(header));
+        uint64_t size,id; memcpy(&size,header+16,8); memcpy(&id,header+56,8);
+        if ((fail_canonical_name && !strcmp((char *)header+80,fail_canonical_name)) ||
+            (fail_deleted_id==le64toh(id) && !le64toh(size))) { errno=EIO; return -1; }
     }
     return __real_fsync(fd);
 }
 
-// A failed rename must leave its candidate outside the visible catalog.
-int __wrap_renameat(int olddir, const char *oldname, int newdir, const char *newname)
+// An unpublished intent must not acquire a visible ID or release old allocator pins.
+ssize_t __wrap_pwrite(int fd, const void *bytes, size_t count, off_t offset)
 {
-    size_t length=strlen(newname);
-    if (fail_snapshot_rename && length > 5 && !strcmp(newname+length-5, ".snap")) { errno=EIO; return -1; }
-    return __real_renameat(olddir, oldname, newdir, newname);
+    if (fail_intent_write && descriptor_suffix(fd, ".txn")) { errno=EIO; return -1; }
+    return __real_pwrite(fd,bytes,count,offset);
+}
+
+// Large-file glibc builds redirect pwrite to this symbol.
+ssize_t __wrap_pwrite64(int fd, const void *bytes, size_t count, off_t offset)
+{
+    if (fail_intent_write && descriptor_suffix(fd, ".txn")) { errno=EIO; return -1; }
+    return __real_pwrite64(fd,bytes,count,offset);
 }
 
 // Restore never supplies a default size that could mask a saved-size regression.
@@ -318,43 +331,35 @@ static void check_faults(const char *path)
     struct storage *storage=open_store(path, IMAGE_SIZE, NULL);
     write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "A"));
     write_payload(storage, 'B');
-    fail_snapshot_rename=1;
+    fail_intent_write=1;
     assert(storage_snapshot_create(storage, "unpublished")==-EIO);
-    fail_snapshot_rename=0;
+    fail_intent_write=0;
     uint64_t size;
     assert(storage_snapshot_stat(storage, point_id(storage, "unpublished"), &size)==-ENOENT);
-    directory_sync_budget=0;
+    fail_canonical_name="B";
     assert(storage_snapshot_create(storage, "B")==-EIO);
-    directory_sync_budget=-1;
+    fail_canonical_name=NULL;
     check_saved(storage, "B", 'B');
     write_payload(storage, 'C'); assert(!storage_snapshot_create(storage, "C"));
     struct snapshot saved=named_record(path, "B", 0);
-    directory_sync_budget=1;
+    fail_deleted_id=saved.id;
     assert(storage_snapshot_delete(storage, "B")==-EIO);
-    directory_sync_budget=-1;
+    fail_deleted_id=0;
     char *unavailable=NULL;
     assert(storage_snapshot_report(storage, 1, &unavailable)>0 && strstr(unavailable, "\"reclaimableBytes\":null"));
     free(unavailable);
-    fail_snapshot_rename=1;
-    assert(storage_snapshot_delete(storage, "A")==-EIO);
-    fail_snapshot_rename=0;
-    assert(storage_snapshot_report(storage, 1, &unavailable)>0 && strstr(unavailable, "\"reclaimableBytes\":null"));
-    free(unavailable);
-    write_payload(storage, 'D'); assert(!storage_sync(storage));
-    write_payload(storage, 'E'); assert(!storage_sync(storage));
     storage_close(storage);
-    // Model an unflushed directory replacement restoring its prior live record after power loss.
+    // Simulate a torn canonical write: the durable deletion intent must repair it.
     char filename[PATH_MAX];
     assert(snprintf(filename, sizeof(filename), "%s.snapshots/%016" PRIx64 ".snap", path, saved.id) < (int)sizeof(filename));
-    int fd=open(filename, O_RDWR|O_TRUNC);
-    assert(fd >= 0 && !snapshot_write(fd, &saved));
-    close(fd);
+    int fd=open(filename, O_RDWR); assert(fd>=0 && pwrite(fd,"torn",4,0)==4); close(fd);
     storage=open_store(path, 0, NULL);
-    check_saved(storage, "B", 'B'); check_saved(storage, "A", 'A');
-    assert(!storage_snapshot_delete(storage, "B"));
+    check_saved(storage, "A", 'A'); check_saved(storage, "C", 'C'); check_payload(storage, NULL, 'C');
+    assert(storage_snapshot_stat(storage,saved.id,&size)==-ENOENT);
+    write_payload(storage, 'D'); assert(!storage_snapshot_create(storage,"after recovery"));
     finish_store(storage);
     snapshot_free(&saved);
-    puts("PASS: publication failures and ambiguous deleted-record replacement preserve pinned data");
+    puts("PASS: unpublished intents retain pins; committed deletions recover torn canonical records");
 }
 
 // A failed parent-only log append remains recoverable after later data changes force a full checkpoint.
@@ -633,13 +638,13 @@ static void check_rename(const char *path)
     assert(!storage_snapshot_delete(storage, "Child"));
     assert(storage_snapshot_rename(storage, child.id, "Deleted")==-ENOENT);
     uint64_t gain=reclaimable(storage, name); assert(gain>=PAYLOAD_SIZE);
-    fail_snapshot_rename=1;
+    fail_intent_write=1;
     assert(storage_snapshot_rename(storage, before.id, "Not published")==-EIO);
-    fail_snapshot_rename=0;
+    fail_intent_write=0;
     assert(!storage_snapshot_stat(storage, point_id(storage, name), &size));
-    directory_sync_budget=0;
+    fail_canonical_name="Published";
     assert(storage_snapshot_rename(storage, before.id, "Published")==-EIO);
-    directory_sync_budget=-1;
+    fail_canonical_name=NULL;
     assert(!storage_snapshot_stat(storage, before.id, &size));
     assert(!storage_snapshot_stat(storage, point_id(storage, "Published"), &size));
     assert(!storage_snapshot_rename(storage, before.id, "Published"));

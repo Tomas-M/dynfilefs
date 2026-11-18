@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "journal.h"
+#include "durable.h"
 #include "report.h"
 #include <dirent.h>
 #include <endian.h>
@@ -154,24 +155,25 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
     struct snapshot_record *records=NULL;
     size_t count=0, capacity=0, words=0;
     uint64_t *bits=NULL;
-    int fd=open_suffix(AT_FDCWD, path, "", O_RDONLY);
-    if (fd < 0) return fd;
-    int result=snapshot_load(fd, &current);
+    int directory=-1; char *base=NULL;
+    int result=storage_path(path, &directory, &base);
+    if (result) return result;
+    int fd=-1;
+    result=snapshot_read_at(directory, base, "", &current);
     if (result==-EPROTONOSUPPORT)
     {
-        result=inspect_legacy(fd, info);
-        close(fd);
+        fd=open_suffix(directory, base, "", O_RDONLY);
+        result=fd<0 ? fd : inspect_legacy(fd, info);
+        if (fd>=0) close(fd);
+        close(directory); free(base);
         if (!result && report) result=snapshot_report(NULL, 0, 0, json, report);
         return result;
     }
-    close(fd);
     if (result) goto out;
     if (current.id || !current.size) { result=-EIO; goto out; }
-    fd=open_suffix(AT_FDCWD, path, ".work", O_RDONLY);
-    if (fd >= 0)
+    result=snapshot_read_at(directory, base, ".work", &saved);
+    if (result!=-ENOENT)
     {
-        result=snapshot_load(fd, &saved);
-        close(fd);
         if (!result && (saved.id || !saved.size || saved.part_size!=current.part_size)) result=-EIO;
         if (!result && saved.sequence > current.sequence)
         {
@@ -180,59 +182,41 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
         }
         snapshot_free(&saved);
     }
-    else if (fd!=-ENOENT) result=fd;
+    else result=0;
     int replayed;
     if (!result) result=journal_replay(AT_FDCWD, path, &current, &replayed);
     if (!result) result=merge_pins(&bits, &words, &current);
     if (result) goto out;
-    char name[PATH_MAX];
-    result=storage_name(name, path, ".snapshots");
-    if (result) goto out;
-    fd=open(name, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if (fd < 0 && errno!=ENOENT) { result=-errno; goto out; }
-    if (fd >= 0)
+    uint64_t *ids=NULL; size_t id_count=0;
+    result=snapshot_ids(directory, base, &ids, &id_count);
+    for (size_t index=0; !result && index<id_count; index++)
     {
-        DIR *dir=fdopendir(fd);
-        if (!dir) { result=-errno; close(fd); goto out; }
-        struct dirent *entry;
-        for (errno=0; (entry=readdir(dir)); errno=0)
+        uint64_t id=ids[index]; char suffix[64];
+        snprintf(suffix, sizeof(suffix), ".snapshots/%016" PRIx64 ".snap", id);
+        result=snapshot_read_at(directory, base, suffix, &saved);
+        if (!result && (saved.id!=id || saved.part_size!=current.part_size)) result=-EIO;
+        if (!result) result=merge_pins(&bits, &words, &saved);
+        if (!result && count==capacity)
         {
-            size_t length=strlen(entry->d_name);
-            if (length < 5 || strcmp(entry->d_name+length-5, ".snap")) continue;
-            uint64_t id=0;
-            char filename[32];
-            if (length!=21 || sscanf(entry->d_name, "%16" SCNx64, &id)!=1) { result=-EIO; break; }
-            snprintf(filename, sizeof(filename), "%016" PRIx64 ".snap", id);
-            if (!id || strcmp(filename, entry->d_name)) { result=-EIO; break; }
-            int source=openat(dirfd(dir), filename, O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-            if (source < 0) { result=-errno; break; }
-            result=snapshot_load(source, &saved);
-            close(source);
-            if (!result && (saved.id!=id || saved.part_size!=current.part_size)) result=-EIO;
-            if (!result) result=merge_pins(&bits, &words, &saved);
-            if (!result && count==capacity)
+            size_t grown=capacity ? capacity*2 : 16;
+            if (grown < capacity || grown > SIZE_MAX/sizeof(*records)) result=-EOVERFLOW;
+            else
             {
-                size_t grown=capacity ? capacity*2 : 16;
-                if (grown < capacity || grown > SIZE_MAX/sizeof(*records)) result=-EOVERFLOW;
-                else
-                {
-                    struct snapshot_record *allocated=realloc(records, grown*sizeof(*records));
-                    if (!allocated) result=-ENOMEM;
-                    else { records=allocated; capacity=grown; }
-                }
+                struct snapshot_record *allocated=realloc(records, grown*sizeof(*records));
+                if (!allocated) result=-ENOMEM;
+                else { records=allocated; capacity=grown; }
             }
-            if (!result)
-            {
-                char *label=strdup(saved.name);
-                if (!label) result=-ENOMEM;
-                else records[count++]=(struct snapshot_record){saved.id, saved.parent, saved.created, saved.size, label, 0, NULL};
-            }
-            snapshot_free(&saved);
-            if (result) break;
         }
-        if (!result && !entry && errno) result=-errno;
-        closedir(dir);
+        if (!result)
+        {
+            char *label=strdup(saved.name);
+            if (!label) result=-ENOMEM;
+            else records[count++]=(struct snapshot_record){saved.id, saved.parent, saved.created, saved.size, label, 0, NULL};
+        }
+        snapshot_free(&saved);
+        if (result) break;
     }
+    free(ids);
     if (!result && current.parent)
     {
         size_t i=0;
@@ -246,6 +230,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
         if (report) result=snapshot_report(records, count, current.parent, json, report);
     }
 out:
+    close(directory); free(base);
     for (size_t i=0; i < count; i++) free((char *)records[i].name);
     free(records); free(bits);
     snapshot_free(&current); snapshot_free(&saved);

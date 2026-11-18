@@ -125,7 +125,9 @@ def check_pivot(binary, root, filesystem):
             finally:
                 if os.path.ismount(live):subprocess.run(['umount',str(live)],check=True,timeout=30)
         with mounted(binary,storage,fuse) as image:
-            with inner_mount(fuse/'snapshots'/(point+'.dat'),root/'saved',filesystem,readonly=True) as saved:
+            history=json.loads((fuse/'snapshots.json').read_text())
+            identity=next(item['id'] for item in history['snapshots'] if item['name']==point and not item['deleted'])
+            with inner_mount(fuse/'snapshots'/(identity+'.dat'),root/'saved',filesystem,readonly=True) as saved:
                 assert (saved/'kept.txt').read_bytes()==content
                 assert (saved/'unsynced.txt').read_text()=='captured by freeze\n'
                 assert not (saved/'later.txt').exists()

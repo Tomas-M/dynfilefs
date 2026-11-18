@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "journal.h"
+#include "durable.h"
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -71,7 +72,6 @@ int journal_append(int directory, const char *path, const struct snapshot *snaps
     }
     result=write_at(*fd, bytes, size, (off_t)*length);
     free(bytes);
-    if (!result && ftruncate(*fd, (off_t)(*length+size))) result=-errno;
     if (!result && fsync(*fd)) result=-errno;
     if (!result && !*length) result=sync_directory(directory, path);
     if (!result) *length+=size;
@@ -190,6 +190,15 @@ int journal_replay(int directory, const char *path, struct snapshot *snapshot, i
 // Remove obsolete records only after their replacement is durable.
 int journal_reset(int directory, const char *path, int *fd)
 {
+    if (directory==AT_FDCWD)
+    {
+        // Interrupted deletion must be replayable from the pinned parent used at the next open.
+        int parent=-1; char *base=NULL;
+        int result=storage_path(path, &parent, &base);
+        if (!result) result=journal_reset(parent, base, fd);
+        if (parent>=0) close(parent);
+        free(base); return result;
+    }
     // Invalidate before close, and never keep a descriptor to an unlinked journal.
     if (*fd >= 0)
     {
@@ -199,7 +208,7 @@ int journal_reset(int directory, const char *path, int *fd)
     }
     char name[PATH_MAX];
     int result=storage_name(name, path, ".log");
-    if (!result && unlinkat(directory, name, 0) && errno!=ENOENT) result=-errno;
+    if (!result) result=durable_reset(directory, path, name);
     if (!result) result=sync_directory(directory, path);
     return result;
 }

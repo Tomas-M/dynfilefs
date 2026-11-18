@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import tempfile
 import time
 
@@ -272,7 +273,8 @@ def check_history(binary, root):
         history=json.loads((mount/'snapshots.json').read_text())
         deleted=next(point for point in history['snapshots'] if point['id']==b['id'])
         assert deleted['deleted'] and deleted['parent']==a['id']
-        assert Path(str(storage)+'.snapshots', b['id']+'.snap').stat().st_size==4096
+        tombstone=Path(str(storage)+'.snapshots', b['id']+'.snap').read_bytes()
+        assert struct.unpack_from('<Q', tombstone, 16)[0]==0 and len(tombstone)>=4096
         snapshot_command(mount, 'create B')
         history=json.loads((mount/'snapshots.json').read_text())
         reused=[point for point in history['snapshots'] if point['name']=='B']

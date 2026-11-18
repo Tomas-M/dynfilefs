@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "format.h"
+#include "durable.h"
 #include "bitmap.h"
 #include <endian.h>
 #include <errno.h>
@@ -36,7 +37,7 @@ static int legacy_header(int fd, uint64_t *split, uint64_t *size)
 // Own the possible output names durably before creating them, so retries are safe.
 static int prepare_conversion(int directory, const char *path, const char *header, int first, int count)
 {
-    char name[PATH_MAX], marker[PATH_MAX], saved[DYN_BLOCK_SIZE];
+    char name[PATH_MAX], saved[DYN_BLOCK_SIZE];
     int fd=open_suffix(directory, path, ".migrate", O_RDONLY), result=0, retry=fd>=0;
     if (retry)
     {
@@ -57,7 +58,8 @@ static int prepare_conversion(int directory, const char *path, const char *heade
         if (result) return result;
         if (retry)
         {
-            if (unlinkat(directory, name, 0) && errno!=ENOENT) return -errno;
+            result=durable_reset(directory, path, name);
+            if (result) return result;
         }
         else
         {
@@ -67,15 +69,8 @@ static int prepare_conversion(int directory, const char *path, const char *heade
         }
     }
     if (retry) return sync_directory(directory, path);
-    fd=open_suffix(directory, path, ".next", O_RDWR|O_CREAT|O_TRUNC);
-    if (fd < 0) return fd;
-    result=write_at(fd, header, DYN_BLOCK_SIZE, 0);
-    if (!result && fsync(fd)) result=-errno;
-    if (close(fd) && !result) result=-errno;
-    if (!result) result=storage_name(name, path, ".next");
-    if (!result) result=storage_name(marker, path, ".migrate");
-    if (!result && renameat(directory, name, directory, marker)) result=-errno;
-    if (!result) result=sync_directory(directory, path);
+    result=storage_name(name, path, ".migrate");
+    if (!result) result=durable_write(directory, path, name, header, DYN_BLOCK_SIZE, -1, -1, NULL);
     return result;
 }
 
@@ -213,7 +208,7 @@ int migration_convert(int directory, const char *path)
     if (result) goto done;
     snapshot.slots=map.slots;
     snapshot.bits=map.used;
-    // A post-rename error must never delete parts referenced by the published root.
+    // A possibly published root must keep every referenced part even when its flush failed.
     publishing=1;
     result=snapshot_publish(directory, path, &snapshot);
 
@@ -225,7 +220,7 @@ done:
         {
             char suffix[32], name[PATH_MAX];
             snprintf(suffix, sizeof(suffix), ".%d", parts+part);
-            if (!storage_name(name, path, suffix)) unlinkat(directory, name, 0);
+            if (!storage_name(name, path, suffix)) durable_reset(directory, path, name);
         }
     snapshot.bits=NULL;
     snapshot_free(&snapshot);

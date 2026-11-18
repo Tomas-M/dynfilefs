@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "storage.h"
 #include "format.h"
+#include "durable.h"
 #include "bitmap.h"
 #include "journal.h"
 #include "report.h"
@@ -209,33 +210,20 @@ static int open_snapshots(struct storage *storage, int create)
     return create ? sync_directory(storage->directory_fd, path) : 0;
 }
 
-// Decode one saved mapping or history-only node without following metadata symlinks.
+// Decode one committed saved mapping, including an interrupted canonical write.
 static int load_snapshot(struct storage *storage, uint64_t id, struct snapshot *snapshot)
 {
-    char filename[32];
-    snprintf(filename, sizeof(filename), "%016" PRIx64 ".snap", id);
-    int fd=openat(storage->snapshots_fd, filename, O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-    if (fd < 0) return -errno;
-    int result=snapshot_load(fd, snapshot);
-    close(fd);
+    char suffix[64]; snprintf(suffix, sizeof(suffix), ".snapshots/%016" PRIx64 ".snap", id);
+    int result=snapshot_read_at(storage->directory_fd, storage->path, suffix, snapshot);
     if (!result && (snapshot->id!=id || snapshot->part_size!=storage->part_size)) result=-EIO;
     return result;
 }
 
-// Publish both live roots and small deleted ancestors with the same atomic replacement.
+// Tombstones and live roots share the same redo-before-overwrite publication.
 static int write_snapshot(struct storage *storage, const struct snapshot *snapshot, int *published)
 {
-    *published=0;
-    int fd=openat(storage->snapshots_fd, ".next", O_RDWR|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC, 0600);
-    if (fd < 0) return -errno;
-    int result=snapshot_write(fd, snapshot);
-    if (close(fd) && !result) result=-errno;
-    char filename[32];
-    snprintf(filename, sizeof(filename), "%016" PRIx64 ".snap", snapshot->id);
-    if (!result && renameat(storage->snapshots_fd, ".next", storage->snapshots_fd, filename)) result=-errno;
-    if (result) return result;
-    *published=1;
-    return fsync(storage->snapshots_fd) ? -errno : 0;
+    char suffix[64]; snprintf(suffix, sizeof(suffix), ".snapshots/%016" PRIx64 ".snap", snapshot->id);
+    return snapshot_replace(storage->directory_fd, storage->path, suffix, snapshot, published);
 }
 
 // Load catalog metadata and aggregate pins, keeping unopened roots out of resident memory.
@@ -246,18 +234,11 @@ static int discover_snapshots(struct storage *storage)
     if (result) return result;
     // Commit observed deletions before their old data can be reused after a restart.
     if (fsync(storage->snapshots_fd)) return -errno;
-    DIR *dir=fdopendir(dup(storage->snapshots_fd));
-    if (!dir) return -errno;
-    struct dirent *file;
-    for (errno=0; (file=readdir(dir)); errno=0)
+    uint64_t *ids=NULL; size_t count=0;
+    result=snapshot_ids(storage->directory_fd, storage->path, &ids, &count);
+    for (size_t i=0; !result && i<count; i++)
     {
-        size_t length=strlen(file->d_name);
-        if (length < 5 || strcmp(file->d_name+length-5, ".snap")) continue;
-        char *end, canonical[32];
-        errno=0;
-        uint64_t id=strtoull(file->d_name, &end, 16);
-        snprintf(canonical, sizeof(canonical), "%016" PRIx64 ".snap", id);
-        if (errno || !id || end!=file->d_name+16 || strcmp(file->d_name, canonical)) { result=-EIO; break; }
+        uint64_t id=ids[i];
         struct snapshot saved={0};
         result=load_snapshot(storage, id, &saved);
         if (!result) result=snapshot_name(saved.name);
@@ -282,8 +263,7 @@ static int discover_snapshots(struct storage *storage)
         snapshot_free(&saved);
         if (result) break;
     }
-    if (!result && errno) result=-errno;
-    closedir(dir);
+    free(ids);
     for (struct storage_snapshot *entry=storage->snapshots; !result && entry; entry=entry->next)
         if (entry->parent && !snapshot_id(storage, entry->parent)) result=-EIO;
     if (!result && storage->parent && !snapshot_id(storage, storage->parent)) result=-EIO;
@@ -750,7 +730,8 @@ static int discard_checkpoints(struct storage *storage)
         char name[PATH_MAX];
         int result=storage_name(name, path, suffixes[i]);
         if (result) return result;
-        if (unlinkat(storage->directory_fd, name, 0) && errno!=ENOENT) return -errno;
+        result=durable_reset(storage->directory_fd, path, name);
+        if (result) return result;
     }
     return sync_directory(storage->directory_fd, path);
 }
@@ -1222,11 +1203,12 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     if (error) goto failed;
     storage->lock_fd=lock_storage(storage->directory_fd, storage->path);
     if (storage->lock_fd < 0) { error=storage->lock_fd; goto failed; }
-    int fd=open_suffix(storage->directory_fd, storage->path, "", O_RDONLY);
-    if (fd >= 0)
+    error=durable_recover(storage->directory_fd, storage->path);
+    if (error) goto failed;
+    int fd=-1;
+    error=snapshot_read_at(storage->directory_fd, storage->path, "", &snapshot);
+    if (error!=-ENOENT)
     {
-        error=snapshot_load(fd, &snapshot);
-        close(fd);
         if (error==-EPROTONOSUPPORT)
         {
             error=migration_convert(storage->directory_fd, storage->path);
@@ -1240,7 +1222,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
         if (!error && snapshot.id) error=-EIO;
         if (error) goto failed;
     }
-    else if (fd==-ENOENT)
+    else
     {
         if (restore || protected_count) { error=-ENOENT; goto failed; }
         snapshot.size=size ? size : increase;
@@ -1268,14 +1250,11 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
         if (error) goto failed;
         increase=0;
     }
-    else { error=fd; goto failed; }
     storage->committed_sequence=snapshot.sequence;
-    fd=open_suffix(storage->directory_fd, storage->path, ".work", O_RDONLY);
-    if (fd >= 0)
+    struct snapshot saved={0};
+    error=snapshot_read_at(storage->directory_fd, storage->path, ".work", &saved);
+    if (error!=-ENOENT)
     {
-        struct snapshot saved={0};
-        error=snapshot_load(fd, &saved);
-        close(fd);
         if (!error && (saved.id || saved.part_size!=snapshot.part_size)) error=-EIO;
         if (error) { snapshot_free(&saved); goto failed; }
         if (saved.sequence > snapshot.sequence)
@@ -1285,7 +1264,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
         }
         else snapshot_free(&saved);
     }
-    else if (fd!=-ENOENT) { error=fd; goto failed; }
+    else error=0;
     int replayed=0;
     error=journal_replay(storage->directory_fd, storage->path, &snapshot, &replayed);
     if (error) goto failed;

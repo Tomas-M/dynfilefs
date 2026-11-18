@@ -57,7 +57,7 @@ def mounted(binary, storage, mount, size=8, split=3, stop_signal=None, mount_opt
 def assert_clean_storage(storage):
     prefix=storage.name+'.'
     companions={path.name[len(storage.name):] for path in storage.parent.iterdir() if path.name.startswith(prefix) and not path.name[len(prefix):].isdigit()}
-    assert companions <= {'.snapshots'}, companions
+    assert companions <= {'.snapshots', '.txn', '.txn.lock'}, companions
 
 
 # Numeric suffixes identify data parts independently of control/metadata files.

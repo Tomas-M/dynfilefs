@@ -1,5 +1,8 @@
 #define _GNU_SOURCE
 #include "format.h"
+#include "durable.h"
+#include <dirent.h>
+#include <inttypes.h>
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -193,49 +196,73 @@ int snapshot_validate(const struct snapshot *snapshot)
     return 0;
 }
 
-// Load the canonical little-endian root and allocation bitmap.
-int snapshot_load(int fd, struct snapshot *snapshot)
+// Decode geometry before allocating memory or trusting counts from the medium.
+static int snapshot_header(const struct disk_header *header, struct snapshot *snapshot, size_t *length)
 {
-    struct disk_header header;
-    int result=read_at(fd, &header, sizeof(header), 0);
+    if (memcmp(header->magic, DYN_MAGIC, 8) || le64toh(header->version)!=DYN_FORMAT) return -EPROTONOSUPPORT;
+    snapshot->size=le64toh(header->size); snapshot->part_size=le64toh(header->part_size);
+    snapshot->slots=le64toh(header->slots); snapshot->sequence=le64toh(header->sequence);
+    snapshot->id=le64toh(header->id); snapshot->parent=le64toh(header->parent);
+    snapshot->created=le64toh(header->created); memcpy(snapshot->name, header->name, sizeof(snapshot->name));
+    return snapshot_length(snapshot, length);
+}
+
+// Ignore allocation-preserving padding while validating the complete logical metadata.
+int snapshot_decode(unsigned char *bytes, size_t available, struct snapshot *snapshot)
+{
+    if (available<sizeof(struct disk_header)) return -EIO;
+    struct disk_header header; memcpy(&header, bytes, sizeof(header));
+    size_t length; int result=snapshot_header(&header, snapshot, &length);
     if (result) return result;
-    if (memcmp(header.magic, DYN_MAGIC, 8) || le64toh(header.version)!=DYN_FORMAT) return -EPROTONOSUPPORT;
-    snapshot->size=le64toh(header.size);
-    snapshot->part_size=le64toh(header.part_size);
-    snapshot->slots=le64toh(header.slots);
-    snapshot->sequence=le64toh(header.sequence);
-    snapshot->id=le64toh(header.id);
-    snapshot->parent=le64toh(header.parent);
-    snapshot->created=le64toh(header.created);
-    memcpy(snapshot->name, header.name, sizeof(snapshot->name));
-    size_t length;
-    result=snapshot_length(snapshot, &length);
-    if (result) return result;
-    struct stat st;
-    if (fstat(fd, &st)) return -errno;
-    if ((uint64_t)st.st_size!=length) return -EIO;
-    unsigned char *bytes=malloc(length);
-    if (!bytes) return -ENOMEM;
-    result=read_at(fd, bytes, length, 0);
-    if (result) { free(bytes); return result; }
+    if (available<length) return -EIO;
     memset(bytes+offsetof(struct disk_header, checksum), 0, 8);
-    if (metadata_checksum(bytes, length)!=le64toh(header.checksum)) { free(bytes); return -EIO; }
+    uint64_t checksum=metadata_checksum(bytes, length);
+    memcpy(bytes+offsetof(struct disk_header, checksum), &header.checksum, 8);
+    if (checksum!=le64toh(header.checksum)) return -EIO;
     snapshot->root_count=snapshot->size ? (size_t)((snapshot->size-1)/(4096*512)+1) : 0;
     size_t words=(size_t)((snapshot->slots+63)/64);
     snapshot->root=snapshot->root_count ? malloc(snapshot->root_count*8) : NULL;
     snapshot->bits=words ? malloc(words*8) : NULL;
-    if ((snapshot->root_count && !snapshot->root) || (words && !snapshot->bits)) { free(bytes); snapshot_free(snapshot); return -ENOMEM; }
+    if ((snapshot->root_count && !snapshot->root) || (words && !snapshot->bits)) { snapshot_free(snapshot); return -ENOMEM; }
     uint64_t *entries=(uint64_t *)(bytes+4096);
-    for (size_t i=0; i < snapshot->root_count; i++) snapshot->root[i]=le64toh(entries[i]);
-    for (size_t i=0; i < words; i++) snapshot->bits[i]=le64toh(entries[snapshot->root_count+i]);
-    free(bytes);
+    for (size_t i=0; i<snapshot->root_count; i++) snapshot->root[i]=le64toh(entries[i]);
+    for (size_t i=0; i<words; i++) snapshot->bits[i]=le64toh(entries[snapshot->root_count+i]);
     result=snapshot_validate(snapshot);
     if (result) snapshot_free(snapshot);
     return result;
 }
 
-// Write a complete checksummed candidate; the caller publishes it after fsync.
-int snapshot_write(int fd, const struct snapshot *snapshot)
+// Read only the logical record, keeping large preallocated tails out of memory.
+int snapshot_load(int fd, struct snapshot *snapshot)
+{
+    struct disk_header header; int result=read_at(fd, &header, sizeof(header), 0);
+    size_t length;
+    if (!result) result=snapshot_header(&header, snapshot, &length);
+    if (result) return result;
+    struct stat st;
+    if (fstat(fd, &st)) return -errno;
+    if (!S_ISREG(st.st_mode) || st.st_size<0 || (uint64_t)st.st_size<length) return -EIO;
+    unsigned char *bytes=malloc(length);
+    if (!bytes) return -ENOMEM;
+    result=read_at(fd, bytes, length, 0);
+    if (!result) result=snapshot_decode(bytes, length, snapshot);
+    free(bytes);
+    return result;
+}
+
+// Offline readers see committed redo records without publishing recovery writes.
+int snapshot_read_at(int directory, const char *path, const char *suffix, struct snapshot *snapshot)
+{
+    char name[PATH_MAX]; int result=storage_name(name, path, suffix);
+    unsigned char *bytes=NULL; size_t length=0;
+    if (!result) result=durable_read(directory, path, name, &bytes, &length);
+    if (!result) result=snapshot_decode(bytes, length, snapshot);
+    free(bytes);
+    return result;
+}
+
+// Serialize one checksummed logical image for direct fixtures and durable publication.
+static int snapshot_encode(const struct snapshot *snapshot, unsigned char **encoded, size_t *size)
 {
     size_t length;
     int result=snapshot_length(snapshot, &length);
@@ -260,30 +287,99 @@ int snapshot_write(int fd, const struct snapshot *snapshot)
     for (size_t i=0; i < roots; i++) entries[i]=htole64(snapshot->root[i]);
     for (size_t i=0; i < words; i++) entries[roots+i]=htole64(snapshot->bits[i]);
     header->checksum=htole64(metadata_checksum(bytes, length));
-    result=write_at(fd, bytes, length, 0);
+    *encoded=bytes; *size=length;
+    return 0;
+}
+
+// Direct callers own an unpublished file; published records use the redo protocol.
+int snapshot_write(int fd, const struct snapshot *snapshot)
+{
+    unsigned char *bytes=NULL; size_t length=0;
+    int result=snapshot_encode(snapshot, &bytes, &length);
+    if (!result) result=write_at(fd, bytes, length, 0);
     free(bytes);
     if (!result && ftruncate(fd, (off_t)length)) result=-errno;
     if (!result && fsync(fd)) result=-errno;
     return result;
 }
 
-// Replace a root/bitmap pair; report publication even if the directory flush fails.
+// Keep a complete durable redo image before touching the canonical inode.
 int snapshot_replace(int directory, const char *path, const char *suffix, const struct snapshot *snapshot, int *published)
 {
-    if (published) *published=0;
-    int fd=open_suffix(directory, path, ".next", O_RDWR|O_CREAT|O_TRUNC);
-    if (fd < 0) return fd;
-    int result=snapshot_write(fd, snapshot);
-    if (close(fd) && !result) result=-errno;
-    char name[PATH_MAX], target[PATH_MAX];
-    if (!result) result=storage_name(name, path, ".next");
-    if (!result) result=storage_name(target, path, suffix);
-    if (!result)
+    if (directory==AT_FDCWD)
     {
-        if (renameat(directory, name, directory, target)) result=-errno;
-        else if (published) *published=1;
+        // Store redo names relative to the same pinned parent used by later mounts.
+        int parent=-1; char *base=NULL;
+        int result=storage_path(path, &parent, &base);
+        if (!result) result=snapshot_replace(parent, base, suffix, snapshot, published);
+        if (parent>=0) close(parent);
+        free(base); return result;
     }
-    if (!result) result=sync_directory(directory, path);
+    if (published) *published=0;
+    unsigned char *bytes=NULL; size_t length=0; char name[PATH_MAX];
+    int result=storage_name(name, path, suffix);
+    if (!result) result=snapshot_encode(snapshot, &bytes, &length);
+    if (!result) result=durable_write(directory, path, name, bytes, length, -1, -1, published);
+    free(bytes);
+    return result;
+}
+
+// Append unique stable IDs while retaining linear directory-scan complexity.
+static int add_snapshot_id(uint64_t id, uint64_t **ids, size_t *count, size_t *capacity)
+{
+    if (*count==*capacity)
+    {
+        size_t grown=*capacity ? *capacity*2 : 16;
+        if (grown<*capacity || grown>SIZE_MAX/sizeof(**ids)) return -EOVERFLOW;
+        uint64_t *next=realloc(*ids, grown*sizeof(**ids));
+        if (!next) return -ENOMEM;
+        *ids=next; *capacity=grown;
+    }
+    (*ids)[(*count)++]=id;
+    return 0;
+}
+
+// Include a newly committed point whose directory entry was interrupted before publication.
+int snapshot_ids(int directory, const char *path, uint64_t **ids, size_t *count)
+{
+    *ids=NULL; *count=0;
+    char folder[PATH_MAX]; int result=storage_name(folder, path, ".snapshots");
+    if (result) return result;
+    int fd=openat(directory, folder, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (fd<0) return errno==ENOENT ? 0 : -errno;
+    DIR *dir=fdopendir(fd);
+    if (!dir) { result=-errno; close(fd); return result; }
+    size_t capacity=0; struct dirent *entry;
+    for (errno=0; (entry=readdir(dir)); errno=0)
+    {
+        size_t length=strlen(entry->d_name);
+        if (length<5 || strcmp(entry->d_name+length-5, ".snap")) continue;
+        uint64_t id=0; char name[32];
+        if (length!=21 || sscanf(entry->d_name, "%16" SCNx64, &id)!=1) { result=-EIO; break; }
+        snprintf(name, sizeof(name), "%016" PRIx64 ".snap", id);
+        if (!id || strcmp(name, entry->d_name)) { result=-EIO; break; }
+        result=add_snapshot_id(id, ids, count, &capacity);
+        if (result) break;
+    }
+    if (!result && errno) result=-errno;
+    closedir(dir);
+    unsigned char *bytes=NULL; size_t length=0; char pending[PATH_MAX];
+    if (!result) result=durable_pending(directory, path, pending, &bytes, &length);
+    if (result==-ENOENT) result=0;
+    size_t prefix=strlen(folder);
+    if (!result && bytes && !strncmp(pending, folder, prefix) && pending[prefix]=='/')
+    {
+        struct snapshot saved={0}; result=snapshot_decode(bytes, length, &saved);
+        char suffix[64], name[PATH_MAX]; snprintf(suffix, sizeof(suffix), ".snapshots/%016" PRIx64 ".snap", saved.id);
+        if (!result) result=storage_name(name, path, suffix);
+        if (!result && (!saved.id || strcmp(name, pending))) result=-EIO;
+        int found=0;
+        for (size_t i=0; i<*count; i++) if ((*ids)[i]==saved.id) found=1;
+        if (!result && !found) result=add_snapshot_id(saved.id, ids, count, &capacity);
+        snapshot_free(&saved);
+    }
+    free(bytes);
+    if (result) { free(*ids); *ids=NULL; *count=0; }
     return result;
 }
 

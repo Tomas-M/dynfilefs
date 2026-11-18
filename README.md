@@ -82,15 +82,18 @@ changes.dat.snapshots/ Named snapshot metadata, sharing the numbered data parts
 changes.dat.lock      Mount lock; removed after clean unmount
 changes.dat.log       Metadata log, up to 32 MiB
 changes.dat.work      Compacted checkpoint
-changes.dat.next      Temporary metadata being written
 changes.dat.migrate   Temporary conversion marker
+changes.dat.txn       Checksummed metadata redo record; retain with the store
+changes.dat.txn.lock  Permanent metadata-transaction lock
 ```
 
 Only needed files are created. Clean unmount leaves the main metadata file,
-numbered data parts and snapshot directory. Numbered parts retain their lengths and
-allocated space for reuse. Crash-recovery files remain until a successful next mount.
+numbered data parts, snapshot directory and permanent transaction companions.
+Published metadata and numbered parts retain their lengths and allocation for reuse.
+Other crash-recovery files remain until a successful next mount.
 
-Keep the main metadata file, all numbered parts and the snapshot directory together.
+Keep the main metadata file, all numbered parts, the snapshot directory and `.txn`
+together. A committed redo can be the only intact copy of the latest metadata.
 Snapshots share backing blocks and are not independent backups.
 
 Mounted stores retain directory handles instead of relying on their original absolute
@@ -183,8 +186,9 @@ or exceed 250 UTF-8 bytes. The `auto-` prefix is reserved for system-created poi
 Creation refuses an existing live name. Each saved point has its own complete mapping
 and allocation metadata at
 `changes.dat.snapshots/ID.snap`; its UTF-8 name is stored inside that checksummed
-record. Unchanged data blocks are shared. Deleted points retain only a 4096-byte
-history record with no mapping or allocation bitmap.
+record. Unchanged data blocks are shared. Deleted points have a logical 4096-byte
+history record with no mapping or allocation bitmap; their metadata file keeps its
+previous allocation to avoid freeing a published FAT chain during an interrupted update.
 
 `rename ID NAME` changes a live point's display name without changing its stable
 16-digit lowercase hexadecimal ID, creation time, ancestry or saved content.
@@ -268,8 +272,7 @@ The first JSON history read after mounting, creating or deleting a point reads
 snapshot metadata twice and caches sparse ownership masks. Later reads count
 those masks in RAM, without scanning data files or freezing the inner filesystem.
 The value can change as current writes or checkpoints release old blocks. It
-measures reusable data-part slots, not physical file shrinking or the separate
-metadata space recovered when a snapshot record becomes a small history record.
+measures reusable data-part slots, not physical file shrinking or metadata-file allocation.
 
 The allocator uses existing free slots before extending a data part or creating a
 new one. Index pages and copy-on-write replacements consume the same reserve, so
@@ -278,11 +281,41 @@ the log and new snapshot records may allocate space independently. Sparse or
 copy-on-write host filesystems can also allocate storage while overwriting an existing
 part range. No data compaction, hole punching or physical shrinking is performed.
 
+## Crash recovery
+
+Metadata updates flush a complete checksummed intent to the permanent `.txn` file
+before overwriting the canonical file. The next writer finishes a valid intent;
+offline readers expose it without changing the medium. A torn new intent leaves
+the previous canonical record available. Published metadata is never replaced by
+rename or truncated. Ordinary data synchronization still appends incremental log records.
+
+Recover the backing filesystem before resuming writes after power loss. FAT has no
+journal: an interrupted allocation can leave a chain longer than its directory
+entry and make a later extension fail or turn the volume read-only. For an unmounted
+FAT volume, use its normal `fsck.fat` recovery first. Metadata redo does not replace
+backing-filesystem repair or make unreliable hardware flushes safe.
+
+Integrators can use the same protocol for small policy files:
+
+```sh
+dynfilefs --metadata /path/to/.policy write state.txt first-line second-line
+dynfilefs --metadata /path/to/.policy read state.txt
+dynfilefs --metadata /path/to/.policy clear state.txt
+dynfilefs --metadata /path/to/.policy recover
+```
+
+Names are relative to the pinned containing directory. Every writer and reader
+must use the same prefix; do not edit these files through shell redirection.
+`mark NAME TIMESTAMP` records an empty timestamp marker. Keep policy prefixes
+separate from the virtual-disk prefix.
+
 ## Existing storage
 
 Format 500 converts automatically on its first mount, without moving payload data.
 Legacy split sizes must be an even number of MiB. The resulting format 600 records
 stable snapshot identities and parent links and cannot be opened by older versions.
+Version 6.03 keeps the format-600 payload but adds redo recovery and padded canonical
+records. Do not reopen a 6.03-managed store with 6.02 or an older binary.
 
 ## Build
 
@@ -321,4 +354,4 @@ python3 tests/pivot-root.py /absolute/path/to/dynfilefs
 
 [Tests and benchmarks](benchmarks/README.md) · [Stable releases](https://github.com/Tomas-M/dynfilefs/releases)
 
-Development version: 6.02, storage format 600.
+Development version: 6.03, storage format 600.

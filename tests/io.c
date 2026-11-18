@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "../storage.h"
 #include "../format.h"
+#include "../durable.h"
 #include <assert.h>
 #include <endian.h>
 #include <errno.h>
@@ -21,7 +22,7 @@ static ssize_t log_write_budget=-1;
 static size_t write_limit;
 static size_t measured_writes;
 static int measure_writes;
-static int fail_sync, fail_log_sync, fail_directory_sync, fail_rename, fail_after_rename, sync_calls, delay_writes, active_writes, overlap, stop_writes;
+static int fail_sync, fail_log_sync, fail_directory_sync, fail_publish, fail_after_publish, sync_calls, delay_writes, active_writes, overlap, stop_writes;
 
 ssize_t __real_pwrite(int fd, const void *buffer, size_t size, off_t offset);
 ssize_t __real_pwrite64(int fd, const void *buffer, size_t size, off_t offset);
@@ -29,9 +30,6 @@ ssize_t __wrap_pwrite(int fd, const void *buffer, size_t size, off_t offset);
 ssize_t __wrap_pwrite64(int fd, const void *buffer, size_t size, off_t offset);
 int __real_fsync(int fd);
 int __wrap_fsync(int fd);
-int __real_renameat(int source_directory, const char *source, int target_directory, const char *target);
-int __wrap_renameat(int source_directory, const char *source, int target_directory, const char *target);
-
 // Target metadata-log faults without failing the preceding data/index-page flushes.
 static int log_descriptor(int fd)
 {
@@ -41,10 +39,20 @@ static int log_descriptor(int fd)
     return length >= 4 && !memcmp(path+length-4, ".log", 4);
 }
 
+// Intent faults leave the canonical checkpoint untouched until publication succeeds.
+static int intent_descriptor(int fd)
+{
+    char descriptor[64], path[PATH_MAX];
+    snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", fd);
+    ssize_t length=readlink(descriptor, path, sizeof(path));
+    return length>=4 && !memcmp(path+length-4, ".txn", 4);
+}
+
 // Faults affect real backing I/O, including short writes inside the production retry loop.
 static ssize_t fault_write(int fd, const void *buffer, size_t size, off_t offset,
                           ssize_t (*write_fn)(int, const void *, size_t, off_t))
 {
+    if (fail_publish && intent_descriptor(fd)) { errno=EIO; return -1; }
     if (measure_writes) measured_writes++;
     int log_fault=log_write_budget >= 0 && log_descriptor(fd);
     if (log_fault && !log_write_budget) { errno=ENOSPC; return -1; }
@@ -81,7 +89,7 @@ ssize_t __wrap_pwrite64(int fd, const void *buffer, size_t size, off_t offset)
 int __wrap_fsync(int fd)
 {
     __atomic_add_fetch(&sync_calls, 1, __ATOMIC_RELAXED);
-    if (fail_sync || fail_after_rename==2 || (fail_log_sync && log_descriptor(fd))) { errno=EIO; return -1; }
+    if (fail_sync || fail_after_publish==2 || (fail_log_sync && log_descriptor(fd))) { errno=EIO; return -1; }
     if (fail_directory_sync)
     {
         struct stat info;
@@ -91,15 +99,8 @@ int __wrap_fsync(int fd)
             if (fail_directory_sync) { errno=EIO; return -1; }
         }
     }
-    return __real_fsync(fd);
-}
-
-// Fail the final metadata publication after its candidate has been written.
-int __wrap_renameat(int source_directory, const char *source, int target_directory, const char *target)
-{
-    if (fail_rename) { errno=EIO; return -1; }
-    int result=__real_renameat(source_directory, source, target_directory, target);
-    if (!result && fail_after_rename==1) fail_after_rename=2;
+    int result=__real_fsync(fd);
+    if (!result && fail_after_publish==1 && intent_descriptor(fd)) fail_after_publish=2;
     return result;
 }
 
@@ -176,7 +177,7 @@ static void check_faults(const char *path)
         if (!fault) write_budget=0;
         if (fault==1) fail_sync=1;
         assert(storage_sync(storage)==(!fault ? -ENOSPC : -EIO));
-        write_budget=-1; fail_sync=0; fail_rename=0;
+        write_budget=-1; fail_sync=0; fail_publish=0;
         storage_close(storage);
         storage=open_store(path);
         check_bytes(storage, expected);
@@ -186,18 +187,18 @@ static void check_faults(const char *path)
     memcpy(expected, input, sizeof(input));
     memset(input, 'D', sizeof(input));
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
-    fail_rename=1;
+    fail_publish=1;
     assert(storage_finish(storage)==-EIO);
-    fail_rename=0;
+    fail_publish=0;
     storage_close(storage);
     storage=open_store(path);
     memcpy(expected, input, sizeof(input));
     check_bytes(storage, expected);
     memset(input, 'E', sizeof(input));
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
-    fail_rename=1;
+    fail_publish=1;
     assert(storage_finish(storage)==-EIO);
-    fail_rename=0;
+    fail_publish=0;
     assert(!storage_finish(storage));
     memcpy(expected, input, sizeof(input));
     storage_close(storage);
@@ -205,9 +206,9 @@ static void check_faults(const char *path)
     check_bytes(storage, expected);
     memset(input, 'F', sizeof(input));
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
-    fail_after_rename=1;
-    assert(storage_finish(storage)==-EIO && fail_after_rename==2);
-    fail_after_rename=0;
+    fail_after_publish=1;
+    assert(storage_finish(storage)==-EIO && fail_after_publish==2);
+    fail_after_publish=0;
     memcpy(expected, input, sizeof(input));
     storage_close(storage);
     storage=open_store(path);
@@ -369,19 +370,21 @@ static void check_journal_limit(const char *path)
         assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));
         if (!round)
         {
-            fail_rename=1;
+            fail_publish=1;
             assert(storage_sync(storage)==-EIO && log_size(log)==32*MIB);
-            fail_rename=0; fail_after_rename=1;
-            assert(storage_sync(storage)==-EIO && fail_after_rename==2);
-            fail_after_rename=0;
+            fail_publish=0; fail_after_publish=1;
+            assert(storage_sync(storage)==-EIO && fail_after_publish==2);
+            fail_after_publish=0;
         }
         else assert(!storage_sync(storage) && !log_size(log));
-        assert(!access(work, F_OK));
-        size_t stale_size=(size_t)log_size(work);
-        unsigned char *stale=malloc(stale_size);
-        int fd=open(work, O_RDONLY);
-        assert(stale && fd >= 0 && pread(fd, stale, stale_size, 0)==(ssize_t)stale_size);
-        close(fd);
+        // Failed canonical flush can leave a committed checkpoint only in the redo record.
+        int parent=-1; char *base=NULL, relative[PATH_MAX];
+        assert(!storage_path(path,&parent,&base));
+        assert(!storage_name(relative,base,".work"));
+        size_t stale_size=0; unsigned char *stale=NULL;
+        assert(!durable_read(parent,base,relative,&stale,&stale_size));
+        close(parent); free(base);
+        int fd;
         memcpy(expected, block, sizeof(block));
         memset(block, 'Z', sizeof(block));
         assert(storage_write(storage, block, sizeof(block), 0)==sizeof(block));

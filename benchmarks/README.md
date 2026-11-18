@@ -16,25 +16,40 @@ interrupted mounts and descriptor-backed reads:
 
 ```sh
 test_dir=$(mktemp -d)
-cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c journal.c bitmap.c migration.c report.c \
-  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=renameat -o "$test_dir/io"
+cc -D_FILE_OFFSET_BITS=64 tests/io.c storage.c format.c durable.c journal.c bitmap.c migration.c report.c \
+  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/io"
 "$test_dir/io" "$test_dir"
-cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c journal.c bitmap.c migration.c report.c \
+cc -D_FILE_OFFSET_BITS=64 tests/cache.c storage.c format.c durable.c journal.c bitmap.c migration.c report.c \
   -pthread -Wl,--wrap=pread,--wrap=pread64,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/cache"
 "$test_dir/cache" "$test_dir"
 cc -DTEST_ALLOC_FAILURE tests/bitmap.c bitmap.c \
   -Wl,--wrap=malloc,--wrap=calloc -o "$test_dir/bitmap"
 "$test_dir/bitmap"
-cc -D_FILE_OFFSET_BITS=64 tests/journal.c format.c journal.c -o "$test_dir/journal"
+cc -D_FILE_OFFSET_BITS=64 tests/journal.c format.c durable.c journal.c -o "$test_dir/journal"
 "$test_dir/journal" "$test_dir"
-cc -D_FILE_OFFSET_BITS=64 tests/lock.c format.c -Wl,--wrap=flock,--wrap=fsync -o "$test_dir/lock"
+cc -D_FILE_OFFSET_BITS=64 tests/lock.c format.c durable.c -Wl,--wrap=flock,--wrap=fsync -o "$test_dir/lock"
 "$test_dir/lock" "$test_dir"
-cc -D_FILE_OFFSET_BITS=64 tests/snapshots.c storage.c format.c journal.c bitmap.c migration.c report.c \
-  -pthread -Wl,--wrap=fsync,--wrap=renameat -o "$test_dir/snapshots"
+cc -D_FILE_OFFSET_BITS=64 tests/snapshots.c storage.c format.c durable.c journal.c bitmap.c migration.c report.c \
+  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync -o "$test_dir/snapshots"
 "$test_dir/snapshots" "$test_dir"
 cc -D_FILE_OFFSET_BITS=64 tests/freeze.c -Wl,--wrap=ioctl -o "$test_dir/freeze"
 "$test_dir/freeze"
 ```
+
+Exercise power loss at backing-I/O boundaries on owned FAT32 loop fixtures:
+
+```sh
+cc -D_FILE_OFFSET_BITS=64 -O1 -g -I. tests/powerloss.c storage.c format.c durable.c journal.c bitmap.c migration.c report.c \
+  -pthread -Wl,--wrap=pwrite,--wrap=pwrite64,--wrap=fsync,--wrap=unlinkat,--wrap=close -o "$test_dir/powerloss"
+python3 tests/powerloss.py "$test_dir/powerloss" "$test_dir"
+python3 tests/powerloss.py "$test_dir/powerloss" "$test_dir" conversion
+```
+
+The test copies raw persisted image bytes while its writer is stopped, performs
+concurrent directory writeback and verifies acknowledged data plus immutable states
+after recovery. Conversion also runs normal outer-FAT recovery and checks that the
+entire original format-500 data part is unchanged. Failed images are retained in the
+supplied test directory. No existing filesystem or block device is used.
 
 Use `--peer /path/to/another-current-format-600/dynfilefs` with the integration runner to
 check new-format interoperability, including native 64-bit and static 32-bit builds.

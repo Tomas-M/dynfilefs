@@ -1,4 +1,4 @@
-AC_INIT([dynfilefs], [6.03])
+AC_INIT([dynfilefs], [6.04])
 AC_PREREQ([2.61])
 AC_CONFIG_HEADERS([config.h])
 AC_PROG_INSTALL

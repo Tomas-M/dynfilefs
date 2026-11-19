@@ -140,7 +140,7 @@ int main(int argc, char **argv)
     if (argc==5 && !strcmp(argv[3],"convert"))
     {
         if (!strcmp(argv[1],"run")) { cut=atoi(argv[4]); armed=1; }
-        int opened=storage_open(&store,argv[2],0,0,0,NULL,NULL,0);
+        int opened=storage_open(&store,argv[2],0,0,0,NULL,NULL,0, 1);
         if (opened) fprintf(stderr,"Conversion open failed: %s (%d)\n",strerror(-opened),opened);
         assert(!opened);
         if (!strcmp(argv[1],"verify"))
@@ -152,7 +152,7 @@ int main(int argc, char **argv)
         }
         printf("ACK %d\n",event); fflush(stdout); raise(SIGSTOP); _exit(0);
     }
-    assert(!storage_open(&store,argv[2],16000ULL*1024*1024,0,1024ULL*1024*1024,NULL,NULL,0));
+    assert(!storage_open(&store,argv[2],16000ULL*1024*1024,0,1024ULL*1024*1024,NULL,NULL,0, 1));
     int directory=-1; char *prefix=NULL; assert(!storage_path(argv[2],&directory,&prefix)); free(prefix);
     unsigned char bytes[8192]; memset(bytes,'A',4096); memset(bytes+4096,'B',4096);
     if (!strcmp(argv[1],"prepare"))

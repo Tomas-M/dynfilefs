@@ -68,7 +68,7 @@ ssize_t __wrap_pwrite64(int fd, const void *bytes, size_t count, off_t offset)
 static struct storage *open_store(const char *path, uint64_t size, const char *restore)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, size, 0, MIB, restore, NULL, 0));
+    assert(!storage_open(&storage, path, size, 0, MIB, restore, NULL, 0, 1));
     return storage;
 }
 
@@ -481,7 +481,7 @@ static void check_mount_protection(const char *path)
     write_payload(storage, 'Z'); assert(!storage_sync(storage));
     storage_close(storage); // Interrupted mount: next open must recover and create point eleven.
     storage=NULL;
-    assert(!storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1));
+    assert(!storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1, 1));
     check_payload(storage, NULL, 'Z');
     check_saved(storage, first.name, 0);
     assert(automatic_points(path)==10);
@@ -503,9 +503,9 @@ static void check_mount_protection(const char *path)
     assert(!storage_snapshot_delete(storage, first.name));
     finish_store(storage);
     storage=NULL;
-    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1)==-ENOENT && !storage);
+    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &first.id, 1, 1)==-ENOENT && !storage);
     uint64_t missing=UINT64_MAX;
-    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &missing, 1)==-ENOENT && !storage);
+    assert(storage_open(&storage, path, 0, 0, MIB, NULL, &missing, 1, 1)==-ENOENT && !storage);
     snapshot_free(&first);
     puts("PASS: exact mount protection survives recovery/finish pruning and expires only at close");
 }
@@ -599,6 +599,28 @@ static void check_autosnapshot(const char *path)
     puts("PASS: runtime automatic-point policy, flushed clean end, crash/clean baseline restore and explicit points");
 }
 
+// Explicit lifecycle callers can suppress both boundaries and compare live state with its parent.
+static void check_mount_snapshot_policy(const char *path)
+{
+    struct storage *storage=NULL;
+    struct storage_info info;
+    assert(!storage_open(&storage, path, IMAGE_SIZE, 0, MIB, NULL, NULL, 0, 0));
+    assert(!storage_get_info(storage, &info) && !info.automatic_snapshots && !info.matches_parent);
+    write_payload(storage, 'A'); assert(!storage_snapshot_create(storage, "baseline"));
+    assert(!storage_get_info(storage, &info) && info.matches_parent);
+    write_payload(storage, 'B');
+    assert(!storage_get_info(storage, &info) && !info.matches_parent);
+    assert(!storage_sync(storage));
+    assert(!storage_get_info(storage, &info) && !info.matches_parent);
+    assert(!storage_snapshot_create(storage, "changed"));
+    assert(!storage_get_info(storage, &info) && info.matches_parent);
+    finish_store(storage); assert(!automatic_points(path));
+    assert(!storage_open(&storage, path, 0, 0, MIB, "baseline", NULL, 0, 0));
+    assert(!storage_get_info(storage, &info) && info.matches_parent);
+    check_payload(storage, NULL, 'A'); finish_store(storage); assert(!automatic_points(path));
+    puts("PASS: mount-time automatic policy and exact parent equality before/after writes and restore");
+}
+
 // Names change independently of IDs, ancestry, saved bytes, open readers and protection.
 static void check_rename(const char *path)
 {
@@ -680,6 +702,7 @@ int main(int argc, char **argv)
     assert(snprintf(path, sizeof(path), "%s/protection", directory) < (int)sizeof(path)); check_mount_protection(path);
     assert(snprintf(path, sizeof(path), "%s/reclaimable", directory) < (int)sizeof(path)); check_reclaimable(path);
     assert(snprintf(path, sizeof(path), "%s/autosnapshot", directory) < (int)sizeof(path)); check_autosnapshot(path);
+    assert(snprintf(path, sizeof(path), "%s/mount-policy", directory) < (int)sizeof(path)); check_mount_snapshot_policy(path);
     assert(snprintf(path, sizeof(path), "%s/rename", directory) < (int)sizeof(path)); check_rename(path);
     return 0;
 }

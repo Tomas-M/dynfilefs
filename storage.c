@@ -823,11 +823,10 @@ static int prune_snapshots(struct storage *storage)
     return 0;
 }
 
-// A clean session boundary reuses its parent's saved state unless mapping or geometry changed.
-static int session_snapshot(struct storage *storage)
+// Compare a synchronized current mapping with its saved parent without reading payload blocks.
+static int matches_parent(struct storage *storage)
 {
-    int result=sync_locked(storage), same=0;
-    if (result) return result;
+    int result=0, same=0;
     struct storage_snapshot *parent=snapshot_id(storage, storage->parent);
     if (parent && parent->size)
     {
@@ -843,6 +842,16 @@ static int session_snapshot(struct storage *storage)
         snapshot_free(&saved);
         if (result) return result;
     }
+    return same;
+}
+
+// A clean session boundary reuses its parent's saved state unless mapping or geometry changed.
+static int session_snapshot(struct storage *storage)
+{
+    int result=sync_locked(storage);
+    if (result) return result;
+    int same=matches_parent(storage);
+    if (same < 0) return same;
     if (!same)
     {
         time_t now=time(NULL);
@@ -1047,13 +1056,17 @@ int storage_snapshot_report(struct storage *storage, int json, char **result)
 // Live reuse capacity includes allocator reservations and lifetime pins unknown to offline inspection.
 int storage_get_info(struct storage *storage, struct storage_info *info)
 {
-    enter_io(storage);
-    pthread_mutex_lock(&storage->allocation);
-    *info=(struct storage_info){DYN_FORMAT, storage->size, storage->part_size,
-        map_reusable_bytes(&storage->map), storage->parent, storage->automatic_snapshots};
-    pthread_mutex_unlock(&storage->allocation);
-    leave_io(storage);
-    return 0;
+    enter_barrier(storage);
+    int same=storage->changed ? 0 : matches_parent(storage);
+    if (same >= 0)
+    {
+        pthread_mutex_lock(&storage->allocation);
+        *info=(struct storage_info){DYN_FORMAT, storage->size, storage->part_size,
+            map_reusable_bytes(&storage->map), storage->parent, storage->automatic_snapshots, same};
+        pthread_mutex_unlock(&storage->allocation);
+    }
+    leave_barrier(storage);
+    return same < 0 ? same : 0;
 }
 
 // Control automatic end-of-session points for this mount without changing write durability.
@@ -1185,11 +1198,11 @@ uint64_t storage_size(struct storage *storage)
 }
 
 // Recover current state, select an optional saved branch, and preserve the session's starting point.
-int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, const char *restore, const uint64_t *protect, size_t protected_count)
+int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, const char *restore, const uint64_t *protect, size_t protected_count, int automatic_snapshots)
 {
     struct storage *storage=calloc(1, sizeof(*storage));
     if (!storage) return -ENOMEM;
-    storage->automatic_snapshots=1;
+    storage->automatic_snapshots=!!automatic_snapshots;
     storage->directory_fd=-1; storage->lock_fd=-1; storage->journal_fd=-1; storage->snapshots_fd=-1;
     for (size_t i=0; i < MAX_PARTS; i++) storage->parts[i].fd=-1;
     pthread_mutex_init(&storage->allocation, NULL);
@@ -1340,7 +1353,7 @@ int storage_open(struct storage **result, const char *path, uint64_t size, uint6
     expose_free_blocks(storage);
     for (size_t i=storage->part_count; i-- > 0;)
         if (storage->parts[i].blocks < storage->capacity) storage->tails[storage->tail_count++]=i;
-    error=session_snapshot(storage);
+    error=storage->automatic_snapshots ? session_snapshot(storage) : sync_locked(storage);
     if (!error) error=publish_current(storage);
     if (error) goto failed;
     snapshot_free(&snapshot);

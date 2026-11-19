@@ -64,7 +64,7 @@ def inspect(binary, root, arguments, expected=None, json_output=False):
 
 # Every value has one documented unit; JSON parent IDs remain safe in JavaScript.
 def fields(size, split=2*MiB, version=600, reusable=0, parent=None, json_output=False):
-    result={'version':version, 'size':size, 'sizeMiB':size//MiB, 'split':split, 'splitMiB':split//MiB, 'blockSize':4096, 'reusableBytes':reusable, 'currentParent':parent, 'automaticSnapshots':None}
+    result={'version':version, 'size':size, 'sizeMiB':size//MiB, 'split':split, 'splitMiB':split//MiB, 'blockSize':4096, 'reusableBytes':reusable, 'currentParent':parent, 'automaticSnapshots':None, 'currentMatchesParent':None}
     return result if json_output else {key:str(value) if value is not None else 'none' for key,value in result.items()}
 
 

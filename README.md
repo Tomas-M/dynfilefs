@@ -6,7 +6,7 @@ is written and can be split to fit FAT32.
 ## Usage
 
 ```sh
-dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]
+dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID] [--no-auto-snapshots]
 ```
 
 - `-f`: backing metadata file; data parts use `.0`, `.1`, etc.
@@ -20,6 +20,9 @@ dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--rest
 - `--snapshots`: inspect the saved history tree before mounting.
 - `--json`: JSON output for `--info` or `--snapshots`.
 - `--restore NAME` or `-o restore=NAME`: start a new mounted session from a named snapshot.
+- `--no-auto-snapshots`: start with automatic startup/end points disabled. Explicit
+  snapshots and normal write synchronization remain available; enable automatic
+  end points later by writing `autosnapshot on` to `snapshot`.
 - `--protect ID` or `-o protect=ID` (repeatable): retain an exact live 16-digit lowercase hexadecimal
   snapshot ID throughout this mount, including recovery, automatic pruning and clean
   unmount. Deletion returns `EBUSY`. Missing/deleted IDs fail instead of selecting a reused
@@ -37,12 +40,17 @@ dynfilefs -i -f /var/lib/changes.dat
 ```
 
 Prints `key:value` lines: `version`, `size`, `sizeMiB`, `split`, `splitMiB`,
-`blockSize`, `reusableBytes`, `currentParent` and `automaticSnapshots`. Sizes without `MiB` are exact bytes;
+`blockSize`, `reusableBytes`, `currentParent`, `automaticSnapshots` and `currentMatchesParent`.
+Sizes without `MiB` are exact bytes;
 MiB values are integers rounded down. `currentParent` is a stable 16-digit hexadecimal
 snapshot ID, or `none`; JSON uses a string or `null`. Inspection includes the latest
 complete checkpoint/log records without publishing recovery or creating a lock.
-`automaticSnapshots` is a runtime setting, so offline inspection returns `null`
+`automaticSnapshots` and `currentMatchesParent` are runtime values, so offline inspection returns `null`
 in JSON or `none` in text output.
+Live `currentMatchesParent` is true only when the synchronized current mapping,
+geometry and live allocation bitmap equal the immutable parent. Unsynchronized
+writes report false. This compares metadata, not payload contents, and does not
+flush writes or recover an inner filesystem.
 An actively mounted store returns `EBUSY`: use its live `stats` and `snapshots.json`
 files instead. Errors go to stderr with a nonzero exit status.
 
@@ -125,8 +133,8 @@ cat /mnt/changes/stats
 echo 'autosnapshot on' > /mnt/changes/snapshot
 ```
 
-Live `stats` reports the boolean `automaticSnapshots`. It defaults to `true` on
-every mount. Disabling it suppresses the automatic clean-end point and automatic
+Live `stats` reports the boolean `automaticSnapshots`. It defaults to `true` unless
+the mount uses `--no-auto-snapshots`. Disabling it suppresses the automatic clean-end point and automatic
 pruning at shutdown; explicit named creation remains available. Working writes
 still reach their normal durable checkpoints and clean shutdown still flushes
 and publishes the current state. This switch does not erase changes or implement
@@ -135,6 +143,9 @@ save its startup point. A caller implementing discard must persist its own
 baseline choice and explicitly restore that point on the next mount, including
 after a crash. The runtime switch does not change the storage format or the
 normal ten-point retention policy when automatic point creation is enabled.
+Applications recovering a filesystem before preserving a pending restore can
+mount with `--no-auto-snapshots`, recover and cleanly unmount the inner filesystem,
+then use `currentMatchesParent` to reuse an identical point or create a new one.
 
 After interruption, the current state recovers the last successful `fsync`. No
 clean-end point is created by the interrupted process. Startup can save the recovered
@@ -354,4 +365,4 @@ python3 tests/pivot-root.py /absolute/path/to/dynfilefs
 
 [Tests and benchmarks](benchmarks/README.md) · [Stable releases](https://github.com/Tomas-M/dynfilefs/releases)
 
-Development version: 6.03, storage format 600.
+Development version: 6.04, storage format 600.

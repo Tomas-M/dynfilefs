@@ -377,7 +377,7 @@ static const struct fuse_operations operations={
 // Keep command help aligned with the physical split limit and session semantics.
 static void usage(const char *program)
 {
-    printf("DynFileFS 6.03 (storage format %d)\n\n", DYN_FORMAT);
+    printf("DynFileFS 6.04 (storage format %d)\n\n", DYN_FORMAT);
     printf("usage: %s -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]\n", program);
     printf("       %s -o size=size_MiB,split=split_MiB storage_file mount_dir\n", program);
     printf("       %s -f storage_file --info|--snapshots [--json]\n", program);
@@ -393,8 +393,9 @@ static void usage(const char *program)
     printf("  --json               Return --info or --snapshots as JSON.\n");
     printf("  --restore NAME       Start from a saved point; also available as -o restore=NAME.\n");
     printf("  --protect ID         Retain an exact snapshot ID throughout this mount; repeat for more IDs.\n");
+    printf("  --no-auto-snapshots  Mount without automatic startup or clean-end snapshots.\n");
     printf("\nFormat-500 storage converts automatically on its first mount.\n");
-    printf("Each session starts at a saved point; a changed clean unmount creates a new one.\n");
+    printf("By default each session starts at a saved point; a changed clean unmount creates a new one.\n");
     printf("The latest ten automatic points are retained; manually named points stay until deleted.\n");
     printf("After interruption, the last successful fsync is recovered.\n");
     printf("Read mount_dir/snapshot to list saved names; write 'create NAME', 'delete NAME', 'protect ID' or 'unprotect ID'.\n");
@@ -440,7 +441,7 @@ int main(int argc, char **argv)
     uint64_t *protected_ids=NULL;
     size_t protected_count=0;
     uint64_t size=0, increase=0, split=0;
-    int debug=0, info=0, snapshots=0, json=0, mount_options=0, option;
+    int debug=0, info=0, snapshots=0, json=0, automatic=1, mount_options=0, option;
     static const struct option options[]={
         {"options", required_argument, NULL, 'o'},
         {"file", required_argument, NULL, 'f'},
@@ -453,12 +454,13 @@ int main(int argc, char **argv)
         {"json", no_argument, NULL, 'j'},
         {"restore", required_argument, NULL, 'r'},
         {"protect", required_argument, NULL, 'P'},
+        {"no-auto-snapshots", no_argument, NULL, 'A'},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0},
     };
     while ((option=getopt_long(argc, argv, "f:m:s:p:o:r:P:dih", options, NULL)) != -1)
     {
-        if (strchr("mspodrP", option)) mount_options=1;
+        if (strchr("mspodrPA", option)) mount_options=1;
         switch (option)
         {
             case 'f': file=optarg; break;
@@ -471,6 +473,7 @@ int main(int argc, char **argv)
             case 'j': json=1; break;
             case 'r': restore=optarg; break;
             case 'P': add_protection(optarg, &protected_ids, &protected_count); break;
+            case 'A': automatic=0; break;
             case 'h': usage(argv[0]); return 0;
             case 'o':
             {
@@ -533,7 +536,7 @@ int main(int argc, char **argv)
     int length=snprintf(virtual_path, sizeof(virtual_path), "%s%s", name, disk_path);
     free(name);
     if (length >= (int)sizeof(virtual_path)) { close(virtual_directory); fprintf(stderr, "Mount directory is too long.\n"); return 1; }
-    error=storage_open(&disk, file, size, increase, split, restore, protected_ids, protected_count);
+    error=storage_open(&disk, file, size, increase, split, restore, protected_ids, protected_count, automatic);
     free(protected_ids);
     if (error)
     {

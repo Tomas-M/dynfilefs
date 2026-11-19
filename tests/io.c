@@ -108,7 +108,7 @@ int __wrap_fsync(int fd)
 static struct storage *open_store(const char *path)
 {
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, IMAGE_SIZE, 0, MIB, NULL, NULL, 0));
+    assert(!storage_open(&storage, path, IMAGE_SIZE, 0, MIB, NULL, NULL, 0, 1));
     assert(storage_size(storage)==IMAGE_SIZE);
     return storage;
 }
@@ -333,7 +333,7 @@ static void check_journal_tail(const char *path, int mode)
     storage=NULL;
     if (mode==2)
     {
-        assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0)==-EIO && !storage);
+        assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1)==-EIO && !storage);
         assert(log_size(log)==8192);
     }
     else
@@ -501,7 +501,7 @@ static void check_io(const char *path)
     char part[PATH_MAX];
     assert(snprintf(part, sizeof(part), "%s.0", path) < (int)sizeof(part));
     struct storage *other=NULL;
-    assert(storage_open(&other, path, IMAGE_SIZE, 0, MIB, NULL, NULL, 0)==-EWOULDBLOCK && !other);
+    assert(storage_open(&other, path, IMAGE_SIZE, 0, MIB, NULL, NULL, 0, 1)==-EWOULDBLOCK && !other);
     assert(access(part, F_OK) && errno==ENOENT);
     assert(storage_write(storage, zero, sizeof(zero), 7*MIB)==sizeof(zero));
     assert(!storage_sync(storage) && access(part, F_OK) && errno==ENOENT);
@@ -550,13 +550,13 @@ static void check_large_part(const char *path)
     uint64_t limit=UINT64_C(16)*1024*1024*1024*1024;
     unsigned char input[4096], output[4096];
     memset(input, 0x9a, sizeof(input));
-    assert(!storage_open(&storage, path, MIB, 0, limit, NULL, NULL, 0));
+    assert(!storage_open(&storage, path, MIB, 0, limit, NULL, NULL, 0, 1));
     alarm(10);
     assert(storage_write(storage, input, sizeof(input), 0)==sizeof(input));
     alarm(0);
     assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1));
     assert(storage_size(storage)==MIB);
     assert(storage_read(storage, output, sizeof(output), 0)==sizeof(output));
     assert(!memcmp(input, output, sizeof(input)));
@@ -584,14 +584,14 @@ static void check_metadata(const char *path)
     damaged[4096]^=1;
     assert(pwrite(fd, damaged, length, 0)==(ssize_t)length);
     storage=NULL;
-    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0)==-EIO && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1)==-EIO && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     assert(!ftruncate(fd, (off_t)length-1));
-    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0)==-EIO && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1)==-EIO && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     uint64_t geometry[]={htole64(4096), htole64((uint64_t)DYN_MAX_PARTS+1)};
     assert(pwrite(fd, geometry, sizeof(geometry), 24)==sizeof(geometry));
-    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0)==-EINVAL && !storage);
+    assert(storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1)==-EINVAL && !storage);
     assert(pwrite(fd, original, length, 0)==(ssize_t)length);
     close(fd);
     free(original); free(damaged);
@@ -644,7 +644,7 @@ static void check_fragmented_runs(const char *path)
     close(fd);
     assert(!snapshot_publish(AT_FDCWD, path, &snapshot));
     struct storage *storage=NULL;
-    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1));
     unsigned char *input=malloc(MIB), *output=malloc(MIB);
     assert(input && output);
     assert(!storage_snapshot_create(storage, "original"));
@@ -657,11 +657,11 @@ static void check_fragmented_runs(const char *path)
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
     assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, NULL, NULL, 0, 1));
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
     assert(!storage_finish(storage));
     storage_close(storage);
-    assert(!storage_open(&storage, path, 0, 0, 0, "original", NULL, 0));
+    assert(!storage_open(&storage, path, 0, 0, 0, "original", NULL, 0, 1));
     memset(input, 0, MIB);
     assert(storage_read(storage, output, MIB, 2*MIB)==MIB && !memcmp(input, output, MIB));
     assert(storage_read(storage, output, MIB, 0)==MIB && !memcmp(input, output, MIB));

@@ -377,7 +377,7 @@ static const struct fuse_operations operations={
 // Keep command help aligned with the physical split limit and session semantics.
 static void usage(const char *program)
 {
-    printf("DynFileFS 6.04 (storage format %d)\n\n", DYN_FORMAT);
+    printf("DynFileFS 6.05 (storage format %d)\n\n", DYN_FORMAT);
     printf("usage: %s -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--restore NAME] [--protect ID]\n", program);
     printf("       %s -o size=size_MiB,split=split_MiB storage_file mount_dir\n", program);
     printf("       %s -f storage_file --info|--snapshots [--json]\n", program);
@@ -391,6 +391,8 @@ static void usage(const char *program)
     printf("  -i, --info           Inspect geometry and reusableBytes without mounting or changes.\n");
     printf("  --snapshots          Show the saved history tree, including deleted ancestors.\n");
     printf("  --json               Return --info or --snapshots as JSON.\n");
+    printf("  --tsv                Return --snapshots as ordered menu rows with compact tree lanes.\n");
+    printf("  --hide ID:NAME       Collapse this exact point in --tsv output; repeat for more points.\n");
     printf("  --restore NAME       Start from a saved point; also available as -o restore=NAME.\n");
     printf("  --protect ID         Retain an exact snapshot ID throughout this mount; repeat for more IDs.\n");
     printf("  --no-auto-snapshots  Mount without automatic startup or clean-end snapshots.\n");
@@ -440,8 +442,10 @@ int main(int argc, char **argv)
     const char *file="", *mount="", *restore=NULL;
     uint64_t *protected_ids=NULL;
     size_t protected_count=0;
+    const char **hidden=NULL;
+    size_t hidden_count=0;
     uint64_t size=0, increase=0, split=0;
-    int debug=0, info=0, snapshots=0, json=0, automatic=1, mount_options=0, option;
+    int debug=0, info=0, snapshots=0, json=0, tsv=0, automatic=1, mount_options=0, option;
     static const struct option options[]={
         {"options", required_argument, NULL, 'o'},
         {"file", required_argument, NULL, 'f'},
@@ -452,6 +456,8 @@ int main(int argc, char **argv)
         {"info", no_argument, NULL, 'i'},
         {"snapshots", no_argument, NULL, 'S'},
         {"json", no_argument, NULL, 'j'},
+        {"tsv", no_argument, NULL, 'T'},
+        {"hide", required_argument, NULL, 'H'},
         {"restore", required_argument, NULL, 'r'},
         {"protect", required_argument, NULL, 'P'},
         {"no-auto-snapshots", no_argument, NULL, 'A'},
@@ -471,6 +477,18 @@ int main(int argc, char **argv)
             case 'i': info=1; break;
             case 'S': snapshots=1; break;
             case 'j': json=1; break;
+            case 'T': tsv=1; break;
+            case 'H':
+            {
+                char id[17]; snprintf(id, sizeof(id), "%.16s", optarg);
+                int valid=strlen(optarg)>17 && optarg[16]==':' && parse_id(id);
+                if (!valid) { fprintf(stderr, "--hide requires ID:NAME with a nonzero 16-digit lowercase hexadecimal ID.\n"); return 1; }
+                if (hidden_count==SIZE_MAX/sizeof(*hidden)) { fprintf(stderr, "Too many hidden snapshots.\n"); return 1; }
+                const char **grown=realloc(hidden, (hidden_count+1)*sizeof(*hidden));
+                if (!grown) { perror("Cannot filter snapshots"); return 1; }
+                hidden=grown; hidden[hidden_count++]=optarg;
+                break;
+            }
             case 'r': restore=optarg; break;
             case 'P': add_protection(optarg, &protected_ids, &protected_count); break;
             case 'A': automatic=0; break;
@@ -495,12 +513,14 @@ int main(int argc, char **argv)
         }
     }
     if (!*file && optind < argc) file=argv[optind++];
+    if ((tsv && (!snapshots || json)) || (hidden_count && !tsv))
+    { fprintf(stderr, "--tsv requires --snapshots without --json; --hide requires --tsv.\n"); return 1; }
     if (info || snapshots)
     {
         int invalid_path=!*file || *mount || optind!=argc;
         if (invalid_path || mount_options || (info && snapshots))
         {
-            fprintf(stderr, "Usage: %s -f storage_file --info|--snapshots [--json] (without mount options)\n", argv[0]);
+            fprintf(stderr, "Usage: %s -f storage_file --info|--snapshots [--json|--tsv] (without mount options)\n", argv[0]);
             return 1;
         }
         char *report=NULL;
@@ -511,7 +531,13 @@ int main(int argc, char **argv)
             result=storage_inspect(file, &saved);
             if (!result) result=storage_info_report(&saved, json, &report);
         }
-        else result=storage_snapshot_inspect(file, json, &report);
+        else
+        {
+            enum snapshot_format format=json ? SNAPSHOT_JSON : SNAPSHOT_TEXT;
+            if (tsv) format=SNAPSHOT_TSV;
+            result=storage_snapshot_inspect(file, format, hidden, hidden_count, &report);
+        }
+        free(hidden);
         if (result < 0)
         {
             if (result==-EBUSY) fprintf(stderr, "Storage is mounted; read stats or snapshots.json in its mount directory.\n");

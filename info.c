@@ -149,7 +149,7 @@ static int inspect_legacy(int fd, struct storage_info *info)
 }
 
 // Recover metadata in memory only, keeping inspection free of automatic snapshots and disk writes.
-static int inspect_state(const char *path, struct storage_info *info, int json, char **report)
+static int inspect_state(const char *path, struct storage_info *info, enum snapshot_format format, const char *const *hidden, size_t hidden_count, char **report)
 {
     struct snapshot current={0}, saved={0};
     struct snapshot_record *records=NULL;
@@ -166,7 +166,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
         result=fd<0 ? fd : inspect_legacy(fd, info);
         if (fd>=0) close(fd);
         close(directory); free(base);
-        if (!result && report) result=snapshot_report(NULL, 0, 0, json, report);
+        if (!result && report) result=snapshot_report(NULL, 0, 0, format, hidden, hidden_count, report);
         return result;
     }
     if (result) goto out;
@@ -227,7 +227,7 @@ static int inspect_state(const char *path, struct storage_info *info, int json, 
     if (!result)
     {
         info->version=DYN_FORMAT; info->size=current.size; info->split=current.part_size; info->parent=current.parent;
-        if (report) result=snapshot_report(records, count, current.parent, json, report);
+        if (report) result=snapshot_report(records, count, current.parent, format, hidden, hidden_count, report);
     }
 out:
     close(directory); free(base);
@@ -238,7 +238,7 @@ out:
 }
 
 // Reject an active mount and retry any publication observed during a read-only inspection.
-static int inspect_storage(const char *path, struct storage_info *info, int json, char **report)
+static int inspect_storage(const char *path, struct storage_info *info, enum snapshot_format format, const char *const *hidden, size_t hidden_count, char **report)
 {
     for (int attempt=0; attempt < 3; attempt++)
     {
@@ -251,7 +251,7 @@ static int inspect_storage(const char *path, struct storage_info *info, int json
         info->automatic_snapshots=-1;
         info->matches_parent=-1;
         if (report) *report=NULL;
-        result=inspect_state(path, info, json, report);
+        result=inspect_state(path, info, format, hidden, hidden_count, report);
         int end_lock=-1, error=inspect_lock(path, &end_lock), changed=0;
         if (!error) error=info_files(path, after);
         if (end_lock >= 0) close(end_lock);
@@ -279,12 +279,12 @@ static int inspect_storage(const char *path, struct storage_info *info, int json
 // Inspect exact post-recovery capacity without mounting or committing anything.
 int storage_inspect(const char *path, struct storage_info *info)
 {
-    return inspect_storage(path, info, 0, NULL);
+    return inspect_storage(path, info, SNAPSHOT_TEXT, NULL, 0, NULL);
 }
 
 // Render the stored ancestry before choosing a mount-time restore target.
-int storage_snapshot_inspect(const char *path, int json, char **result)
+int storage_snapshot_inspect(const char *path, enum snapshot_format format, const char *const *hidden, size_t hidden_count, char **result)
 {
     struct storage_info info;
-    return inspect_storage(path, &info, json, result);
+    return inspect_storage(path, &info, format, hidden, hidden_count, result);
 }

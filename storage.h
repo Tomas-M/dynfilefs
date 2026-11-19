@@ -18,6 +18,7 @@
 
 struct storage;
 struct storage_snapshot;
+enum snapshot_format { SNAPSHOT_TEXT, SNAPSHOT_JSON, SNAPSHOT_TSV };
 
 struct storage_info
 {
@@ -26,7 +27,7 @@ struct storage_info
 };
 
 int storage_inspect(const char *path, struct storage_info *info);
-int storage_snapshot_inspect(const char *path, int json, char **result);
+int storage_snapshot_inspect(const char *path, enum snapshot_format format, const char *const *hidden, size_t hidden_count, char **result);
 int storage_open(struct storage **result, const char *path, uint64_t size, uint64_t increase, uint64_t split, const char *restore, const uint64_t *protect, size_t protected_count, int automatic_snapshots);
 void storage_close(struct storage *storage);
 uint64_t storage_size(struct storage *storage);

@@ -1046,7 +1046,7 @@ int storage_snapshot_report(struct storage *storage, int json, char **result)
             storage->usage_valid==1 ? &entry->reclaimable : NULL};
     }
     pthread_mutex_unlock(&storage->allocation);
-    int length=snapshot_report(records, count, storage->parent, json, result);
+    int length=snapshot_report(records, count, storage->parent, json ? SNAPSHOT_JSON : SNAPSHOT_TEXT, NULL, 0, result);
     free(records);
     pthread_mutex_unlock(&storage->reporting);
     leave_io(storage);

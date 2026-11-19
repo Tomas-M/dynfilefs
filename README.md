@@ -19,6 +19,15 @@ dynfilefs -f storage_file -m mount_dir [-s size_MiB] [-p split_MiB] [-d] [--rest
 - `-i`, `--info`: inspect saved geometry and reusable capacity without mounting or changing it.
 - `--snapshots`: inspect the saved history tree before mounting.
 - `--json`: JSON output for `--info` or `--snapshots`.
+- `--tsv`: read-only `--snapshots` output for a selectable tree. Each UTF-8 row has
+  five tab-separated fields: stable ID, name, UTC date, compact lane number and
+  nearest visible parent ID (empty for a root). Parents precede children; linear
+  histories stay in one lane and side branches are indented. The current branch
+  comes last. Deleted ancestors are collapsed while their descendants remain visible.
+- `--hide ID:NAME` (repeatable, with `--tsv`): collapse only a matching ID/name pair.
+  Missing or renamed points are unaffected. This changes presentation only.
+  Names containing tabs or line breaks are rejected by this format. JSON and
+  ordinary tree output remain complete and unchanged.
 - `--restore NAME` or `-o restore=NAME`: start a new mounted session from a named snapshot.
 - `--no-auto-snapshots`: start with automatic startup/end points disabled. Explicit
   snapshots and normal write synchronization remain available; enable automatic
@@ -365,4 +374,4 @@ python3 tests/pivot-root.py /absolute/path/to/dynfilefs
 
 [Tests and benchmarks](benchmarks/README.md) · [Stable releases](https://github.com/Tomas-M/dynfilefs/releases)
 
-Development version: 6.04, storage format 600.
+Development version: 6.05, storage format 600.

@@ -11,7 +11,7 @@ struct snapshot_record
     const uint64_t *reclaimable;
 };
 
-int snapshot_report(const struct snapshot_record *records, size_t count, uint64_t parent, int json, char **result);
+int snapshot_report(const struct snapshot_record *records, size_t count, uint64_t parent, enum snapshot_format format, const char *const *hidden, size_t hidden_count, char **result);
 int storage_info_report(const struct storage_info *info, int json, char **result);
 
 #endif
